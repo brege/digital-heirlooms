@@ -1,0 +1,126 @@
+#!/usr/bin/env bash
+# setup
+
+set -euo pipefail
+
+# Resolve script/repo directory
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+CONFIG_DIR_DEFAULT="$HOME/.config/backup-kit"
+CONFIG_DIR="${CONFIG_DIR:-$CONFIG_DIR_DEFAULT}"
+
+# Determine system identity
+USER_NAME="$(whoami)"
+HOST_NAME="$(hostname -s)"
+IDENT="${USER_NAME}@${HOST_NAME}"
+
+# Template patterns
+PLACEHOLDER="__user__@__hostname__"
+PLACEHOLDER_ESCAPED="__user__@__hostname__"
+
+# Paths
+ENV_SRC_TEMPLATE="$SCRIPT_DIR/config/env/${PLACEHOLDER}_.env.template"
+ENV_DEST="$CONFIG_DIR/env/${IDENT}_.env"
+
+EXCLUDES_SRC_TEMPLATE="$SCRIPT_DIR/config/excludes/${PLACEHOLDER}"
+EXCLUDES_DEST="$CONFIG_DIR/excludes/${IDENT}"
+
+MACHINE_SRC_TEMPLATE="$SCRIPT_DIR/config/machines-available/${PLACEHOLDER}"
+MACHINE_DEST="$CONFIG_DIR/machines-available/${IDENT}"
+
+DEFAULT_EXCLUDE_SRC="$SCRIPT_DIR/config/excludes/default.exclude"
+DEFAULT_EXCLUDE_DEST="$CONFIG_DIR/excludes/default.exclude"
+
+SYMLINK_TARGET="$ENV_DEST"
+SYMLINK_NAME="$SCRIPT_DIR/config/backup.env"
+
+# Handle --force flag
+FORCE=false
+if [[ "${1:-}" == "--force" ]]; then
+    FORCE=true
+    echo "⚠️  Force mode enabled: existing files will be overwritten"
+fi
+
+echo "📦 Setting up backup-kit config for: $IDENT"
+echo "📁 Config directory: $CONFIG_DIR"
+
+# Create needed subdirectories
+mkdir -p "$CONFIG_DIR/env" "$CONFIG_DIR/excludes" "$CONFIG_DIR/machines-available"
+
+# Copy and template the .env file
+if [[ "$FORCE" = true || ! -f "$ENV_DEST" ]]; then
+    sed "s/$PLACEHOLDER_ESCAPED/$IDENT/g" "$ENV_SRC_TEMPLATE" > "$ENV_DEST"
+    echo "✅ Wrote: $ENV_DEST"
+else
+    echo "⚠️  Skipped: $ENV_DEST already exists (use --force to overwrite)"
+fi
+
+# Copy and template the excludes file
+if [[ "$FORCE" = true || ! -f "$EXCLUDES_DEST" ]]; then
+    sed "s/$PLACEHOLDER_ESCAPED/$IDENT/g" "$EXCLUDES_SRC_TEMPLATE" > "$EXCLUDES_DEST"
+    echo "✅ Wrote: $EXCLUDES_DEST"
+else
+    echo "⚠️  Skipped: $EXCLUDES_DEST already exists (use --force to overwrite)"
+fi
+
+# Copy and template the machine config
+if [[ "$FORCE" = true || ! -f "$MACHINE_DEST" ]]; then
+    sed \
+      -e "s/$PLACEHOLDER_ESCAPED/$IDENT/g" \
+      -e "s|__script_dir__|$SCRIPT_DIR|g" \
+      "$MACHINE_SRC_TEMPLATE" > "$MACHINE_DEST"
+    # Now update the src path in the machine config
+    sed -i "s|src=\$CONFIG_DIR/test/source|src=\$SCRIPT_DIR/test/source|g" "$MACHINE_DEST"
+    echo "✅ Wrote: $MACHINE_DEST"
+else
+    echo "⚠️  Skipped: $MACHINE_DEST already exists (use --force to overwrite)"
+fi
+
+# Always copy default.exclude unless it exists and force is not set
+if [[ "$FORCE" = true || ! -f "$DEFAULT_EXCLUDE_DEST" ]]; then
+    cp "$DEFAULT_EXCLUDE_SRC" "$DEFAULT_EXCLUDE_DEST"
+    echo "✅ Copied: $DEFAULT_EXCLUDE_DEST"
+else
+    echo "⚠️  Skipped: $DEFAULT_EXCLUDE_DEST already exists (use --force to overwrite)"
+fi
+
+# Create or update symlink for backup.env
+ln -sf "$SYMLINK_TARGET" "$SYMLINK_NAME"
+echo "🔗 Linked: $SYMLINK_NAME → $SYMLINK_TARGET"
+
+# ============================
+# 🧪 Optional unit test (if --test is passed)
+# ============================
+
+if [[ "${1:-}" == "--test" ]]; then
+  echo ""
+  echo "🧪 Running unit test to verify setup..."
+  echo "→ This will back up dummy test files from test/source/ to test/target/"
+  echo "→ Dry run mode is enabled by default, so no real sync will occur unless changed in backup.env"
+  echo ""
+
+  # Link the machine config so it's picked up
+  echo "🔗 Enabling test machine config..."
+  echo "Machine: ${USER}@$(hostname -s)"
+  echo "Link: $CONFIG_DIR/machines-available/${USER}@$(hostname -s) -> $CONFIG_DIR/machines-available/${USER}@$(hostname -s)"
+  "$SCRIPT_DIR/bin/machine_state.sh" enable "${USER}@$(hostname -s)"
+
+  # Update LOCAL_DEST_DIR in the generated .env to point to the test target directory
+  ENV_FILE="$CONFIG_DIR/env/${USER}@$(hostname -s)_.env"
+  sed -i "s|LOCAL_DEST_DIR=.*|LOCAL_DEST_DIR=\"$SCRIPT_DIR/test/target\"|" "$ENV_FILE"
+  echo "🔗 Updated LOCAL_DEST_DIR in $ENV_FILE to point to $SCRIPT_DIR/test/target"
+
+  # Update the machine config to reference the test target directory
+  MACHINE_FILE="$CONFIG_DIR/machines-available/${USER}@$(hostname -s)"
+  sed -i "s|LOCAL_DEST_DIR=.*|LOCAL_DEST_DIR=\"$SCRIPT_DIR/test/target\"|" "$MACHINE_FILE"
+  echo "🔗 Updated LOCAL_DEST_DIR in $MACHINE_FILE to point to $SCRIPT_DIR/test/target"
+
+  echo "🚀 Executing run_backup.sh..."
+  
+  # Pass SCRIPT_DIR to the run_backup.sh
+  "$SCRIPT_DIR/bin/run_backup.sh"
+
+  echo ""
+  echo "✅ Unit test complete. Check 'test/target/' for backup results."
+  echo "💡 You can now edit your config in ~/.config/backup-kit/ and re-run ./bin/run_backup.sh"
+fi
+

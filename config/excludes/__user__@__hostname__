@@ -1,4 +1,4 @@
-# ~/.config/backup-kit/excludes/user@hostname
+# ~/.config/backup-kit/excludes/__user__@__hostname__
 
 # Inherits global excludes from default.exclude (already applied by backup-kit)
 

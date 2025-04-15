@@ -1,5 +1,0 @@
-# config/machines-available/user@hostname.template
-
-[user@hostname]
-exclude-from=$CONFIG_DIR/excludes/user@hostname
-src=$(realpath ./test/source/dir[A-Z])
