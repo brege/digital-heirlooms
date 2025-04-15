@@ -1,0 +1,17 @@
+[Unit]
+Description=Backup-Kit Service for User
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/bin/bash /path/to/backupkit/bin/run_backup.sh
+User=user
+Group=user
+WorkingDirectory=/home/user
+Environment="HOME=/home/user"
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
+

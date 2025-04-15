@@ -1,0 +1,22 @@
+# ~/.config/backup-kit/excludes/default.excludes
+# 🌐 Global excludes — applied to all backups
+
+# Ignore Unix socket and IPC files
+**/*socket
+**/*.ipc
+**/*.pid
+**/*.lock
+**/*S.gpg-agent*
+
+# Skip device and virtual system mounts
+/dev/*
+/proc/*
+/sys/*
+/run/*
+/tmp/*
+/mnt/*
+/media/*
+/var/tmp/*
+
+# Syncthing
+**/*Syncthing
