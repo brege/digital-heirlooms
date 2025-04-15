@@ -1,0 +1,16 @@
+# .gitignore
+
+# Ignore local system output and artifacts
+config/backup.env
+
+test/target/
+
+# Ignore OS or editor temp files
+*~
+.DS_Store
+Thumbs.db
+*.swp
+
+# Optional: logs or cache files
+*.log
+.cache/

@@ -1,0 +1,8 @@
+# ~/.config/backup-kit/excludes/user@hostname
+
+# Inherits global excludes from default.exclude (already applied by backup-kit)
+
+# Example: User-specific exclusions for testing
+*Z.epub               # Exclude files ending with 'Z.epub' in the filename
+dirB/myfile1.opus      # Exclude this specific file from dirB
+
