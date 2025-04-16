@@ -1,240 +1,178 @@
-# Backup Package for Server Management `backup-kit`
+# Backup Kit for System Backups and Archiving
 
-This package automates the process of backing up specified directories from remote servers to a local backup location. It includes a service and timer to handle backups on a scheduled basis, with options for daily, hourly, or custom intervals.
+This toolkit simplifies backing up directories from local or remote machines, using modular config files, excludes, and hooks. It supports incremental syncs, customizable archiving, and optional automation via `systemd`.
 
 ## Table of Contents
 
 - [Installation](#installation)
-- [Configuration](#configuration)
-  - [Backup Configuration (`backup.paths`)](#backup-configuration-backuppaths)
-  - [Backup Excludes (`backup_excludes`)](#backup-excludes-backup_excludes)
-- [Service Setup](#service-setup)
-  - [User-Specific Service and Timer](#user-specific-service-and-timer)
-- [Backup Script (`run_backup.sh`)](#backup-script-run_backups)
-- [Logs](#logs)
-- [Important Notes](#important-notes)
+- [Config Layout](#config-layout)
+- [Setup and Test Mode](#setup-and-test-mode)
+- [Environment File](#environment-file)
+- [Machine and Exclude Files](#machine-and-exclude-files)
+- [Hooks](#hooks)
+- [Service Integration](#service-integration)
+- [Backup Logic](#backup-logic)
+- [Bloatscan Tool](#bloatscan-tool)
+- [Notes](#notes)
 - [License](#license)
 
 ---
 
 ## Installation
 
-1. Clone or download the repository:
-   
-   ```bash
-   git clone <repo-url>
-   ```
+Clone the repo and run the setup script:
 
-2. Place the package in the desired location. For example, `/home/notroot/backup-kit`.
-
-3. Ensure the directory structure looks like this:
-   ```bash
-   backup-kit/
-   ├── backup_excludes/
-   │   ├── notroot@beelink
-   │   ├── notroot@server
-   │   └── scraper@server
-   ├── backup.paths
-   ├── run_backup.sh
-   ├── .gitignore
-   └── README.md
-   ```
-
-## Configuration
-
-Backup Configuration (`backup.paths`)
-
-This file defines which directories are backed up from each source. Each section corresponds to a remote server user, followed by the directories to be backed up, and any exclusions.
-
-**Example:**
-```ini
-[notroot@beelink]
-exclude-from=/home/notroot/backup_excludes/notroot@beelink
-src=/opt/jellyseerr/config
-src=/etc/jellyseerr
-src=/etc/systemd/system/jellyseerr.service
-src=/home/notroot/
-src=/var/lib/plexmediaserver/
-
-[scraper@server]
-src=/home/scraper
-exclude-from=/home/notroot/backup_excludes/scraper@server
-src=/var/lib/prowlarr
-src=/var/lib/sonarr
-src=/opt/jellyseerr/config
-
-[notroot@server]
-src=/home/notroot
-exclude-from=/home/notroot/backup_excludes/notroot@server
-src=/usr/share/nginx
-src=/etc/systemd/system/radarr.service
-```
-
-## Backup Excludes (`backup_excludes`)
-
-This folder contains exclusions for each user or server, preventing unnecessary files (e.g., cache, temporary files) from being included in backups. Each file is named according to the format `user@host`.
-
-## Service Setup
-
-### User-Specific Service and Timer
-
-The backup service and timer can be set up to run automatically at scheduled intervals using `systemd`. This can be installed on a per-user basis, ensuring it doesn't affect system-wide services.
-
-1. **Service File** (`backup.service`)
-
-The `backup.service` file specifies the script to run for backups.
-
-Create the service file at`~/.config/systemd/user/backup.service`:
-```
-[Unit]
-Description=Run Backup
-
-[Service]
-ExecStart=/home/notroot/backup_package/run_backup.sh
-```
-
-2. **Timer File** (`backup.timer`)
-
-The `backup.timer` file defines when the service should run. You can choose from various schedules, such as daily, hourly, or every 6 hours.
-
-Create the timer file at `~/.config/systemd/user/backup.timer`:
-```
-[Unit]
-Description=Run Backup Timer
-
-[Timer]
-OnCalendar=daily
-# For hourly backups, uncomment the next line:
-# OnCalendar=hourly
-# For backups every 6 hours, uncomment the next line:
-# OnCalendar=*-*-* 00,06,12,18:00:00
-
-Unit=backup.service
-
-[Install]
-WantedBy=timers.target
-```
-
-3. **Enabling and Starting the Timer**
-
-Once the service and timer files are created, enable and start the timer for the user:
 ```bash
-systemctl --user daemon-reload
+git clone https://github.com/brege/backup-kit ~/backup-kit
+cd ~/backup-kit
+./setup
+```
+
+This initializes your user config at `~/.config/backup-kit/`.
+
+## Config Layout
+
+```bash
+/home/user/.config/backup-kit
+├── env
+│   └── user@hostname_.env
+├── excludes
+│   ├── default.exclude
+│   └── user@hostname
+├── hooks-available
+│   ├── 01_crontab.sh
+│   └── 90_archive.sh
+├── hooks-enabled
+├── machines-available
+│   └── user@hostname
+└── machines-enabled
+    └── user@hostname -> /home/user/.config/backup-kit/machines-available/user@hostname
+```
+
+## Setup and Test Mode
+
+Running `./setup` populates the config directory with templates and symlinks `config/backup.env` to the machine-specific env file (e.g. `user@hostname_.env`) in `~/.config/backup-kit/env/`. It also copies the repo's `hooks/` directory to your config's `hooks-available/`.
+
+For test mode, use:
+
+```bash
+./setup --test
+```
+
+This links a test configuration and runs a local backup from `test/source/` to `test/target/` with an archive hook enabled. It verifies include/exclude rules and archive creation without touching real data. Only the hooks symlinked during test mode will be unlinked afterward, preserving any user-added hooks.
+
+## Environment File
+
+The active environment file is:
+
+```bash
+~/.config/backup-kit/env/<user@host>_.env
+```
+
+It defines local/remote base paths and archive destinations. Customize variables like `REMOTE_PUSH_TARGET` and `REMOTE_ARCHIVE_BASE`.
+
+To support multiple push targets, use separate config dirs (e.g., `~/.config/backup-kit-to-nas`, etc.). Run backups against each:
+
+```bash
+./run_backup.sh --config ~/.config/backup-kit-to-nas
+```
+
+## Machine and Exclude Files
+
+Each source machine has its own config file in `machines-available/`, e.g.:
+
+```ini
+# ~/.config/backup-kit/machines-available/user@hostname
+[user@hostname]
+exclude-from=config/excludes/user@hostname
+src=/var/lib/plexmediaserver
+src=/home/user
+```
+
+This example backs up Plex Media Server data, which is notoriously difficult to restore cleanly due to its mix of heirloom content and volatile runtime data. Careful excludes are essential.
+
+A matching exclude file might look like:
+
+```bash
+# config/excludes/user@hostname
+/var/lib/plexmediaserver/Library/Application Support/Plex Media Server/{Cache,Codecs}
+/var/lib/plexmediaserver/Library/Application Support/Plex Media Server/Preferences.xml # protected
+/home/user/.cache/
+/home/user/.local/share/Trash/
+```
+
+Enable a machine by symlinking its config to `machines-enabled/`. Use `machine_state.sh` to manage symlinks:
+
+```bash
+./machine_state.sh enable user@hostname
+```
+
+## Hooks
+
+Hooks live in `hooks-available/`. During setup, any you want to run must be linked into `hooks-enabled/`.
+
+Hook filenames should start with a numeric prefix to define execution order, like:
+
+```bash
+10_crontab.sh   # regenerate cron entries
+90_archive.sh   # archive the synced output
+```
+
+You can write your own custom hooks—just place them in `hooks-available/` and symlink to `hooks-enabled/` as needed. The prefix ensures proper execution order, and all hooks receive environment variables from `backup.env`.
+
+## Service Integration
+
+The setup script can install a `systemd` user service and timer. To enable it:
+
+```bash
+systemctl --user daemon-reexec
 systemctl --user enable backup.timer
 systemctl --user start backup.timer
 ```
 
-This will schedule the backup task as defined in the timer file.
+To check the timer:
 
-4. **Check the Timer Status**
-
-You can check the status of the timer with:
 ```bash
 systemctl --user status backup.timer
 ```
 
-## Backup Script (`run_backup.sh`)
+Edit the timer file in your config to customize frequency (default: daily).
 
-The backup script uses rsync to copy the specified directories from remote servers to the local backup location.
+## Backup Logic
 
-**Important:** The script runs based on the configuration in `backup.paths`, excluding directories specified in `backup_excludes`.
+`bin/run_backup.sh` handles the core logic:
 
-You can customize the backup script (`run_backup.sh`) as necessary, but the default script works as follows:
+- Sources `backup.env` (which is linked to `~/.config/backup-kit/env/user@hostname_.env`) to load config
+- Reads machines from `machines-enabled/`
+- Rsyncs each listed `src` while respecting excludes
+- Executes any hooks post-rsync
 
-- It reads the `backup.paths` file and pulls the directories listed under each user/server.
-- It then runs `rsync` to transfer those directories to the local backup folder.
-- Afterward, it saves the current crontab for `notroot` to allow easy restoration.
+Rsync is incremental. Hooks like `90_archive.sh` will overwrite the archive by default unless modified to version them.
 
-## Logs
+## Bloatscan Tool
 
-Logs for the backup process can be viewed using standard `systemd` commands. Since this is a user-specific service, logs are saved under the user's journal.
+`bloatscan.sh` helps identify large subdirectories that might be wasteful to back up:
 
-To view the logs:
 ```bash
-journalctl --user -u backup.service
+./bloatscan.sh /home/user --depth=3 --limit=10
 ```
 
-## Bonus Tool: `bloatscan.sh` - Disk Usage Scanner
+Run remotely:
 
-This utility script helps you identify the largest directories in your system by walking the filesystem tree up to a specified depth and sorting by total size. It's useful for investigating bloated directories and optimizing backup targets.
-
-**Usage**
 ```bash
-./bloatscan.sh [TARGET_DIR] [--depth=N] [--limit=N]
-```
-- `TARGET_DIR` (optional) – the base directory to scan (defaults to $HOME)
-
-- `--depth=N` – how deep the directory tree should be scanned (default: 4)
-
-- `--limit=M` – how many of the largest directories to show (default: 30)
-
-**Example**
-```bash
-~/backup-kit/bin/bloatscan.sh /home/notroot --depth=3 --limit=10
+cat bin/bloatscan.sh | ssh user@host 'bash -s' -- /home/user --depth=2 --limit=5
 ```
 
-Sample output:
-```bash
-🔍 Scanning: /home/notroot/
-🧭 Max depth: 3
-📉 Showing top 10 entries
+Use it iteratively: look for folders with massive file counts or disk usage. Consider whether those are really worth preserving—often they come from package managers like `npm`, `pip`, or `node_modules`, and can be reinstalled later.
 
-Size             Files      Dirs  Top-Level             Path
-4.3GiB           17361         4  docker                /home/notroot/docker
-3.9GiB           15920         2  docker                /home/notroot/docker/jellyfin
-3.8GiB           13671         6  docker                /home/notroot/docker/jellyfin/config
-2.6GiB           74143         2  .local                /home/notroot/.local
-1.4GiB              35         3  .local                /home/notroot/.local/state
-1.4GiB              31         1  .local                /home/notroot/.local/state/syncthing
-1.3GiB           74108        13  .local                /home/notroot/.local/share
-1.3GiB           74090         1  .local                /home/notroot/.local/share/pnpm
-1.2GiB           12530        15  .cache                /home/notroot/.cache
-1.1GiB           11414         2  .cache                /home/notroot/.cache/mozilla/firefox
-```
-You can rerun the script and zoom in on a bloated directory like this:
-```bash
-~/backup-kit/bin/bloatscan.sh /home/notroot/.local --depth=2 --limit=5
-```
-That is:
-```
-🔍 Scanning: /home/notroot/.local
-🧭 Max depth: 2
-📉 Showing top 5 entries
+## Notes
 
-Size             Files      Dirs  Top-Level             Path
-1.4GiB              35         3  .local                /home/notroot/.local/state
-1.4GiB              31         1  .local                /home/notroot/.local/state/syncthing
-1.3GiB           74108        13  .local                /home/notroot/.local/share
-1.3GiB           74090         1  .local                /home/notroot/.local/share/pnpm
-296KiB               1         1  .local                /home/notroot/.local/share/nautilus
-```
-This is helpful for drilling down into suspected large usage paths and identifying directories you may want to **exclude from backup** by editing the appropriate `backup_excludes/<user>@<host>` file.
-
-You can also check on directories on a remote server you're interested in backing up:
-```
-cat ~/backup-kit/bin/bloatscan.sh | ssh scraper@server 'bash -s' -- /home/scraper  --depth=3 --limit=20
-```
-
-## Important Notes
-
-This script **creates a duplicate** of the specified files and directories at each run. That means **it copies the entire data set** into a separate backup location rather than synchronizing changes or storing incremental differences.
-
-**Recommended Usage:**
-
-- Set the backup target to a directory that’s:
-
-  * **Watched by [Syncthing](https://syncthing.net/downloads/)** or a similar sync tool to move it offsite.
-
-  * **Mounted on a storage or network volume** if boot/OS drive is low on space (e.g. an external drive, NAS share, or cloud mount).
-
-Because this script runs at a fixed interval (e.g. daily or hourly), it works well with systems that **don’t need real-time sync** but do need consistent snapshots of critical data.
-
-**Tip:** Monitor backup growth live with:
-```bash   
-watch -n 1 'du -sh /home/notroot/Syncthing/server_backup/*'
-```
-This helps spot unexpectedly large changes and ensures backup behavior is as expected.
+- Rsync is incremental; archives are not yet versioned
+- Backup doesn't reinstall software, just preserves config and data
+- To test changes, use `--test` to isolate from real data
 
 ## License
 
 This project is licensed under the MIT License.
+
+
