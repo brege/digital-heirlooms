@@ -33,6 +33,10 @@ DEFAULT_EXCLUDE_DEST="$CONFIG_DIR/excludes/default.exclude"
 SYMLINK_TARGET="$ENV_DEST"
 SYMLINK_NAME="$SCRIPT_DIR/config/backup.env"
 
+HOOKS_SRC_DIR="$SCRIPT_DIR/config/hooks"
+HOOKS_AVAILABLE_DIR="$CONFIG_DIR/hooks-available"
+HOOKS_ENABLED_DIR="$CONFIG_DIR/hooks-enabled"
+
 # Handle --force flag
 FORCE=false
 if [[ "${1:-}" == "--force" ]]; then
@@ -44,7 +48,7 @@ echo "📦 Setting up backup-kit config for: $IDENT"
 echo "📁 Config directory: $CONFIG_DIR"
 
 # Create needed subdirectories
-mkdir -p "$CONFIG_DIR/env" "$CONFIG_DIR/excludes" "$CONFIG_DIR/machines-available"
+mkdir -p "$CONFIG_DIR/env" "$CONFIG_DIR/excludes" "$CONFIG_DIR/machines-available" "$HOOKS_AVAILABLE_DIR" "$HOOKS_ENABLED_DIR"
 
 # Copy and template the .env file
 if [[ "$FORCE" = true || ! -f "$ENV_DEST" ]]; then
@@ -83,6 +87,14 @@ else
     echo "⚠️  Skipped: $DEFAULT_EXCLUDE_DEST already exists (use --force to overwrite)"
 fi
 
+# Copy hooks to hooks-available if missing or --force is set
+if [[ "$FORCE" = true || ! -d "$HOOKS_AVAILABLE_DIR" || -z "$(ls -A "$HOOKS_AVAILABLE_DIR")" ]]; then
+  cp -a "$HOOKS_SRC_DIR/." "$HOOKS_AVAILABLE_DIR"
+  echo "✅ Copied hooks to: $HOOKS_AVAILABLE_DIR"
+else
+  echo "⚠️  Skipped: hooks-available already exists and is not empty (use --force to overwrite)"
+fi
+
 # Create or update symlink for backup.env
 ln -sf "$SYMLINK_TARGET" "$SYMLINK_NAME"
 echo "🔗 Linked: $SYMLINK_NAME → $SYMLINK_TARGET"
@@ -98,29 +110,35 @@ if [[ "${1:-}" == "--test" ]]; then
   echo "→ Dry run mode is enabled by default, so no real sync will occur unless changed in backup.env"
   echo ""
 
-  # Link the machine config so it's picked up
   echo "🔗 Enabling test machine config..."
-  echo "Machine: ${USER}@$(hostname -s)"
-  echo "Link: $CONFIG_DIR/machines-available/${USER}@$(hostname -s) -> $CONFIG_DIR/machines-available/${USER}@$(hostname -s)"
-  "$SCRIPT_DIR/bin/machine_state.sh" enable "${USER}@$(hostname -s)"
+  "$SCRIPT_DIR/bin/machine_state.sh" enable "$IDENT"
 
-  # Update LOCAL_DEST_DIR in the generated .env to point to the test target directory
-  ENV_FILE="$CONFIG_DIR/env/${USER}@$(hostname -s)_.env"
+  ENV_FILE="$CONFIG_DIR/env/${IDENT}_.env"
+  MACHINE_FILE="$CONFIG_DIR/machines-available/${IDENT}"
+
   sed -i "s|LOCAL_DEST_DIR=.*|LOCAL_DEST_DIR=\"$SCRIPT_DIR/test/target\"|" "$ENV_FILE"
-  echo "🔗 Updated LOCAL_DEST_DIR in $ENV_FILE to point to $SCRIPT_DIR/test/target"
-
-  # Update the machine config to reference the test target directory
-  MACHINE_FILE="$CONFIG_DIR/machines-available/${USER}@$(hostname -s)"
   sed -i "s|LOCAL_DEST_DIR=.*|LOCAL_DEST_DIR=\"$SCRIPT_DIR/test/target\"|" "$MACHINE_FILE"
-  echo "🔗 Updated LOCAL_DEST_DIR in $MACHINE_FILE to point to $SCRIPT_DIR/test/target"
+
+  # Link test hook only if not already linked
+  TEST_HOOK="90_archive.sh"
+  if [[ ! -e "$HOOKS_ENABLED_DIR/$TEST_HOOK" ]]; then
+    ln -s "$HOOKS_AVAILABLE_DIR/$TEST_HOOK" "$HOOKS_ENABLED_DIR/$TEST_HOOK"
+    HOOK_WAS_LINKED=true
+    echo "🔗 Temporarily enabled test hook: $TEST_HOOK"
+  else
+    HOOK_WAS_LINKED=false
+    echo "⚠️  Skipped: hook $TEST_HOOK already linked"
+  fi
 
   echo "🚀 Executing run_backup.sh..."
-  
-  # Pass SCRIPT_DIR to the run_backup.sh
   "$SCRIPT_DIR/bin/run_backup.sh"
+
+  if [[ "$HOOK_WAS_LINKED" == true ]]; then
+    rm "$HOOKS_ENABLED_DIR/$TEST_HOOK"
+    echo "🧹 Unlinked test hook: $TEST_HOOK"
+  fi
 
   echo ""
   echo "✅ Unit test complete. Check 'test/target/' for backup results."
   echo "💡 You can now edit your config in ~/.config/backup-kit/ and re-run ./bin/run_backup.sh"
 fi
-

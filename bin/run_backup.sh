@@ -31,7 +31,7 @@ fi
 # Derived paths
 MACHINES_ENABLED_DIR="$CONFIG_ROOT/machines-enabled"
 EXCLUDES_DIR="$CONFIG_ROOT/excludes"
-HOOKS_DIR="$CONFIG_ROOT/hooks"
+HOOKS_DIR="$CONFIG_ROOT/hooks-enabled"
 
 echo "Using machine configs from: $MACHINES_ENABLED_DIR"
 echo "Using excludes: $EXCLUDES_DIR"
@@ -185,7 +185,6 @@ if [[ -n "$REMOTE_TARGET_BASE" && "$direct_remote_rsync" == false && -n "${LOCAL
 fi
 
 # Post-backup hooks
-HOOKS_DIR="$CONFIG_ROOT/hooks"
 if [[ -d "$HOOKS_DIR" ]]; then
   for hook in "$HOOKS_DIR"/*; do
     if [[ -x "$hook" ]]; then
