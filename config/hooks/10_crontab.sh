@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-echo "🔁 Crontab export hook..."
+echo "Crontab Export: Starting hook..."
 
 declare -A seen_targets
 
@@ -15,11 +15,10 @@ for target_dir in "$@"; do
 
   if [[ -n "$crontab_output" ]]; then
     echo "$crontab_output" > "$target_dir/crontab.txt"
-    echo "📥 $target_name: crontab saved"
+    echo "Crontab Export: $target_name: Crontab saved to crontab.txt."
   else
-    echo "🕳 $target_name: no crontab to export"
+    echo "Crontab Export: $target_name: No crontab found."
   fi
 done
 
-echo "✅ Crontab export hook complete."
-
+echo "Crontab Export: Hook finished."
