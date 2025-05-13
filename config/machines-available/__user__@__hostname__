@@ -2,5 +2,5 @@
 
 [__user__@__hostname__]
 exclude-from=$CONFIG_DIR/excludes/__user__@__hostname__
-src=__script_dir__/test/source/dir[A-Z]
+src=/path/to/your/data # Placeholder for real path - EDIT THIS
 

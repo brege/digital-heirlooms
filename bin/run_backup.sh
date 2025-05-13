@@ -6,270 +6,295 @@ set -euo pipefail
 # ----------------------------------------
 
 BACKUPKIT_HOME="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-CONFIG_ROOT_DEFAULT="$BACKUPKIT_HOME/config"
-CONFIG_ROOT="$CONFIG_ROOT_DEFAULT"
+CONFIG_ROOT_DEFAULT="$BACKUPKIT_HOME/config" # Default if no --config and no CONFIG_DIR in repo's backup.env
+CONFIG_ROOT="$CONFIG_ROOT_DEFAULT"           # Initial assumption
 
-# Check for --config=/some/path
-for arg in "$@"; do
-  case $arg in
+# --- Argument parsing for --config ---
+CONFIG_ROOT_OVERRIDE=""
+# More robust argument parsing for --config VALUE and --config=VALUE
+# Create a temporary array from $@ to safely shift and inspect
+args_to_process=("$@")
+idx=0
+while [[ $idx -lt ${#args_to_process[@]} ]]; do
+  arg_to_check="${args_to_process[$idx]}"
+  case "$arg_to_check" in
+    --config)
+      if [[ -n "${args_to_process[$((idx + 1))]:-}" && "${args_to_process[$((idx + 1))]}" != --* ]]; then
+        CONFIG_ROOT_OVERRIDE="${args_to_process[$((idx + 1))]}"
+        # Conceptually consume both arguments by advancing idx appropriately or breaking if only --config is parsed
+        idx=$((idx + 1)) # Advance past value
+      else
+        echo "[WARN] --config flag found, but no value followed or value is another flag. Ignoring." >&2
+      fi
+      ;;
     --config=*)
-      CONFIG_ROOT="$(realpath "${arg#*=}")"
-      shift
+      CONFIG_ROOT_OVERRIDE="${arg_to_check#*=}"
+      ;;
+    *)
+      # Other arguments can be processed here if run_backup.sh takes more options
+      # For now, we only care about --config
       ;;
   esac
+  ((idx++))
 done
 
-# Try to source backup.env and let it override CONFIG_ROOT via CONFIG_DIR
-ENV_FILE="$CONFIG_ROOT_DEFAULT/backup.env"
-if [[ -f "$ENV_FILE" ]]; then
-  set -a  # Auto-export all variables
-  source "$ENV_FILE"
-  set +a
-  CONFIG_ROOT="${CONFIG_DIR:-$CONFIG_ROOT}"
+if [[ -n "$CONFIG_ROOT_OVERRIDE" ]]; then
+  # --config was provided, use its value directly
+  if ! CONFIG_ROOT="$(realpath "$CONFIG_ROOT_OVERRIDE")"; then
+    echo "[ERROR] Invalid path specified with --config: $CONFIG_ROOT_OVERRIDE" >&2
+    exit 1
+  fi
+  echo "Using specified configuration root: $CONFIG_ROOT"
+else
+  # No --config, use default logic:
+  # Check if the REPO's default backup.env specifies a user CONFIG_DIR
+  DEFAULT_REPO_ENV_FILE="$CONFIG_ROOT_DEFAULT/backup.env"
+  if [[ -f "$DEFAULT_REPO_ENV_FILE" ]]; then
+    # Source into a subshell to safely extract CONFIG_DIR
+    USER_SPECIFIC_CONFIG_DIR_FROM_DEFAULT_ENV=$( (source "$DEFAULT_REPO_ENV_FILE" >/dev/null 2>&1 && echo "$CONFIG_DIR") )
+    if [[ -n "$USER_SPECIFIC_CONFIG_DIR_FROM_DEFAULT_ENV" ]]; then
+      if ! CONFIG_ROOT="$(realpath "$USER_SPECIFIC_CONFIG_DIR_FROM_DEFAULT_ENV")"; then
+         echo "[ERROR] Invalid CONFIG_DIR specified in $DEFAULT_REPO_ENV_FILE: $USER_SPECIFIC_CONFIG_DIR_FROM_DEFAULT_ENV" >&2
+         exit 1
+      fi
+      echo "Using user-defined configuration root from $DEFAULT_REPO_ENV_FILE: $CONFIG_ROOT"
+    else
+      # No CONFIG_DIR in repo's backup.env, so CONFIG_ROOT remains $CONFIG_ROOT_DEFAULT
+      echo "Using default repository configuration root: $CONFIG_ROOT"
+    fi
+  else
+    # No repo default backup.env, CONFIG_ROOT remains $CONFIG_ROOT_DEFAULT
+    echo "Using default repository configuration root (backup.env not found in $CONFIG_ROOT_DEFAULT): $CONFIG_ROOT"
+  fi
 fi
 
-# Derived paths
+# Now, CONFIG_ROOT is definitively set.
+# Source the backup.env from this final CONFIG_ROOT.
+ENV_FILE_TO_SOURCE="$CONFIG_ROOT/backup.env"
+if [[ -f "$ENV_FILE_TO_SOURCE" ]]; then
+  set -a  # Auto-export all variables from this env file
+  source "$ENV_FILE_TO_SOURCE"
+  set +a
+else
+  echo "[WARN] Environment file not found: $ENV_FILE_TO_SOURCE. Critical variables (DRY_RUN, target paths) may be unset." >&2
+  # Set critical defaults if env file is missing to prevent unbound errors or misbehavior
+  DRY_RUN="${DRY_RUN:-true}" # Default to true (safe) if no env file
+  LOCAL_TARGET_BASE="${LOCAL_TARGET_BASE:-}"
+  REMOTE_TARGET_BASE="${REMOTE_TARGET_BASE:-}"
+  LOCAL_ARCHIVE_BASE="${LOCAL_ARCHIVE_BASE:-}"
+  REMOTE_ARCHIVE_BASE="${REMOTE_ARCHIVE_BASE:-}"
+fi
+
+# Derived paths from the final CONFIG_ROOT
 MACHINES_ENABLED_DIR="$CONFIG_ROOT/machines-enabled"
 EXCLUDES_DIR="$CONFIG_ROOT/excludes"
-HOOKS_DIR="$CONFIG_ROOT/hooks-enabled"
+HOOKS_DIR="$CONFIG_ROOT/hooks-enabled" # Using HOOKS_DIR as used later in script
 
 echo "Backup Engine: Using machine configs from: $MACHINES_ENABLED_DIR"
 echo "Backup Engine: Using excludes from: $EXCLUDES_DIR"
+echo "Backup Engine: Using hooks from: $HOOKS_DIR"
 
 DEFAULT_EXCLUDE="$EXCLUDES_DIR/default.exclude"
-# echo "$DEFAULT_EXCLUDE" # Commented out: Potentially a debug line
 if [[ -f "$DEFAULT_EXCLUDE" ]]; then
   echo "Backup Engine: Applying global excludes from: $DEFAULT_EXCLUDE"
   default_exclude="--exclude-from=$DEFAULT_EXCLUDE"
 else
   default_exclude=""
+  echo "Backup Engine: No global exclude file found at $DEFAULT_EXCLUDE (this is okay)."
 fi
 
 
-REMOTE_TARGET_BASE="${REMOTE_TARGET_BASE:-}"
-DRY_RUN="${DRY_RUN:-false}"
-direct_remote_rsync_performed_for_machine=false # Tracks if direct remote rsync happened for current machine
-staged_locally_for_machine=false # Tracks if current machine data was staged locally
+REMOTE_TARGET_BASE="${REMOTE_TARGET_BASE:-}" # Ensure it's defined, default to empty if not from env
+DRY_RUN="${DRY_RUN:-false}"                # Default from your original script, overridden by env if set
+# LOCAL_TARGET_BASE should be defined by backup.env if used
+
+# These flags were from your original script's global scope
+direct_remote_rsync=false # This flag's original logic might need review based on new structure
+staged_dirs=()            # This was used for the batch push from stage
 
 current_user=""
 current_host=""
 current_exclude=""
 backup_paths=()
-
-# This associative array will store the root backup directory for each machine
-# Key: "user@host", Value: "/path/to/backup_root_for_user@host"
-declare -A target_machine_roots 
+declare -A target_machine_roots # Using this to pass to hooks
 
 is_local_host() {
   [[ "$1" == "localhost" || "$1" == "$(hostname)" || "$1" == "$(hostname -f)" ]]
 }
 
-# This function processes backup paths for the current_user@current_host
 flush_backup() {
   [[ ${#backup_paths[@]} -eq 0 ]] && return
 
-  # Reset flags for the current machine processing
-  direct_remote_rsync_performed_for_machine=false
-  staged_locally_for_machine=false
-  local machine_backup_root="" # Specific to this flush_backup call
+  local staged_locally_this_flush=false # Specific to this call of flush_backup
 
   for src_path in "${backup_paths[@]}"; do
-    # Scenario 1: Local staging area defined, AND remote target defined
-    # Action: Backup to local staging, then rsync staged data to remote.
     if [[ -n "$LOCAL_TARGET_BASE" && -n "$REMOTE_TARGET_BASE" ]]; then
-      machine_backup_root="${LOCAL_TARGET_BASE%/}/$current_user@$current_host" # Store local stage as the primary root for this machine
-      target_machine_roots["$current_user@$current_host"]="$machine_backup_root"
+      # Scenario: Local staging then remote push
+      dest_dir="${LOCAL_TARGET_BASE%/}/$current_user@$current_host"
+      target_machine_roots["$current_user@$current_host"]="$dest_dir" # Store local stage path for hooks
 
       src_path_expanded=""
-      if is_local_host "$current_host"; then
-        use_ssh=false
-        src_path_expanded="$src_path"
-      else
-        use_ssh=true
-        src_path_expanded="$current_user@$current_host:$src_path"
-      fi
-
-      mkdir -p "$machine_backup_root"
-
+      if is_local_host "$current_host"; then use_ssh=false; src_path_expanded="$src_path"; else use_ssh=true; src_path_expanded="$current_user@$current_host:$src_path"; fi
+      
+      mkdir -p "$dest_dir"
       rsync_cmd=(rsync -avzR --delete $default_exclude)
       [[ "$DRY_RUN" == "true" ]] && rsync_cmd+=(--dry-run)
       [[ -n "$current_exclude" && -f "$current_exclude" ]] && rsync_cmd+=(--exclude-from="$current_exclude")
       $use_ssh && rsync_cmd+=(-e ssh)
-      rsync_cmd+=("$src_path_expanded" "$machine_backup_root")
+      rsync_cmd+=("$src_path_expanded" "$dest_dir")
 
       echo # for spacing
       echo "Backup Engine: Rsyncing to local staging ($current_user@$current_host):"
-      echo "Path: $src_path_expanded -> $machine_backup_root"
-      # echo "Command: ${rsync_cmd[*]}" # Potentially verbose, enable if needed for debug
+      echo "Path: $src_path_expanded -> $dest_dir"
       "${rsync_cmd[@]}"
-      staged_locally_for_machine=true
+      staged_locally_this_flush=true
 
-    # Scenario 2: NO local staging, ONLY remote target defined
-    # Action: Backup directly to remote.
     elif [[ -z "$LOCAL_TARGET_BASE" && -n "$REMOTE_TARGET_BASE" ]]; then
-      machine_backup_root="$REMOTE_TARGET_BASE/$current_user@$current_host"
-      target_machine_roots["$current_user@$current_host"]="$machine_backup_root"
+      # Scenario: Direct remote rsync
+      dest_dir="$REMOTE_TARGET_BASE/$current_user@$current_host"
+      target_machine_roots["$current_user@$current_host"]="$dest_dir" # Store remote path for hooks
       
-      src_path_expanded="$current_user@$current_host:$src_path" # Assume src_path is on the remote, so prefix
-
+      src_path_expanded="$current_user@$current_host:$src_path"
       rsync_cmd=(rsync -avzR --delete $default_exclude)
       [[ "$DRY_RUN" == "true" ]] && rsync_cmd+=(--dry-run)
       [[ -n "$current_exclude" && -f "$current_exclude" ]] && rsync_cmd+=(--exclude-from="$current_exclude")
-      rsync_cmd+=(-e ssh "$src_path_expanded" "$machine_backup_root/") # Note: target ends with /
+      rsync_cmd+=(-e ssh "$src_path_expanded" "${dest_dir%/}/") # Ensure target dir syntax for contents
 
       echo # for spacing
       echo "Backup Engine: Rsyncing directly to remote ($current_user@$current_host):"
-      echo "Path: $src_path_expanded -> $machine_backup_root/"
-      # echo "Command: ${rsync_cmd[*]}" # Potentially verbose
+      echo "Path: $src_path_expanded -> ${dest_dir%/}/"
       "${rsync_cmd[@]}"
-      direct_remote_rsync_performed_for_machine=true
-      
-    # Scenario 3: LOCAL_TARGET_BASE defined, but REMOTE_TARGET_BASE is not (or other fallback)
-    # Action: Backup to local target only.
-    else
-      machine_backup_root="${LOCAL_TARGET_BASE:-$HOME/Backup}/$current_user@$current_host"
-      target_machine_roots["$current_user@$current_host"]="$machine_backup_root"
+      # direct_remote_rsync=true; # This flag was part of the old batch logic
+
+    else # Fallback: Only LOCAL_TARGET_BASE is set (or neither, which should be caught by pre-check)
+      if [[ -z "$LOCAL_TARGET_BASE" ]]; then
+          echo "[ERROR] flush_backup: LOCAL_TARGET_BASE is not set for local backup of $current_user@$current_host. Skipping path $src_path." >&2
+          continue
+      fi
+      dest_dir="${LOCAL_TARGET_BASE%/}/$current_user@$current_host"
+      target_machine_roots["$current_user@$current_host"]="$dest_dir" # Store local path for hooks
 
       src_path_expanded=""
-      if is_local_host "$current_host"; then
-        use_ssh=false
-        src_path_expanded="$src_path"
-      else
-        use_ssh=true
-        src_path_expanded="$current_user@$current_host:$src_path"
-      fi
+      if is_local_host "$current_host"; then use_ssh=false; src_path_expanded="$src_path"; else use_ssh=true; src_path_expanded="$current_user@$current_host:$src_path"; fi
 
-      mkdir -p "$machine_backup_root"
-
+      mkdir -p "$dest_dir"
       rsync_cmd=(rsync -avzR --delete $default_exclude)
       [[ "$DRY_RUN" == "true" ]] && rsync_cmd+=(--dry-run)
       [[ -n "$current_exclude" && -f "$current_exclude" ]] && rsync_cmd+=(--exclude-from="$current_exclude")
       $use_ssh && rsync_cmd+=(-e ssh)
-      rsync_cmd+=("$src_path_expanded" "$machine_backup_root")
+      rsync_cmd+=("$src_path_expanded" "$dest_dir")
 
       echo # for spacing
       echo "Backup Engine: Rsyncing to local destination ($current_user@$current_host):"
-      echo "Path: $src_path_expanded -> $machine_backup_root"
-      # echo "Command: ${rsync_cmd[*]}" # Potentially verbose
+      echo "Path: $src_path_expanded -> $dest_dir"
       "${rsync_cmd[@]}"
-      staged_locally_for_machine=true # Treat as "staged" if LOCAL_TARGET_BASE was primary
+      staged_locally_this_flush=true # Treat as "staged" if it's the primary local copy
     fi
   done
 
-  # If data for this machine was staged locally and there's a remote target, push it.
-  if [[ "$staged_locally_for_machine" == true && -n "$REMOTE_TARGET_BASE" && -n "$LOCAL_TARGET_BASE" ]]; then
-    # Ensure machine_backup_root here is the local staging path
+  # If data for this machine was staged locally AND there's a remote target, push it now.
+  if [[ "$staged_locally_this_flush" == true && -n "$LOCAL_TARGET_BASE" && -n "$REMOTE_TARGET_BASE" ]]; then
     local local_stage_path="${LOCAL_TARGET_BASE%/}/$current_user@$current_host"
-    local remote_dest_path="$REMOTE_TARGET_BASE/$current_user@$current_host" # Remote destination for this machine
-
-    # It's possible target_machine_roots was set to remote if only remote was defined.
-    # For hooks, we want the *final* resting place or the most complete local copy.
-    # If we sync to remote from local, the remote becomes the more up-to-date for this staged data.
-    # However, hooks might want to operate on the local staged data *before* a potentially slow remote sync,
-    # or on the remote data *after*. This needs careful consideration for hook timing.
-    # For now, target_machine_roots["$current_user@$current_host"] will be the LOCAL_TARGET_BASE one if it was used.
-    # If hooks need to know about the remote push, that's a more complex state to pass.
+    local remote_dest_path="$REMOTE_TARGET_BASE/$current_user@$current_host"
 
     echo # for spacing
     echo "Backup Engine: Syncing staged data for $current_user@$current_host to remote..."
     echo "Path: $local_stage_path/ -> $remote_dest_path/"
     
-    rsync_push_cmd=(rsync -az --delete) # Use -az, attributes and relative paths handled by first rsync
+    rsync_push_cmd=(rsync -az --delete $default_exclude) # Excludes can be passed here too if needed
     [[ "$DRY_RUN" == "true" ]] && rsync_push_cmd+=(--dry-run)
-    # Add $default_exclude if it should apply to the push as well
-    # [[ -n "$default_exclude" ]] && rsync_push_cmd+=($default_exclude) 
-    # Add $current_exclude if it should apply to the push from stage to remote
-    # [[ -n "$current_exclude" && -f "$current_exclude" ]] && rsync_push_cmd+=(--exclude-from="$current_exclude")
-    
-    rsync_push_cmd+=("$local_stage_path/" "$remote_dest_path/") # Note trailing slashes for content sync
-    # echo "Command: ${rsync_push_cmd[*]}" # Potentially verbose
+    rsync_push_cmd+=("$local_stage_path/" "$remote_dest_path/") 
     "${rsync_push_cmd[@]}"
   fi
 
-  backup_paths=() # Clear paths for the next machine
+  backup_paths=() # Clear paths for the next machine section in the same file or next file
   current_exclude=""
 }
 
 # Read and process machine configuration files
+machine_processed_count=0
 for config_file in "$MACHINES_ENABLED_DIR"/*; do
-  [[ -f "$config_file" ]] || continue # Skip if not a file
-
-  # Reset machine-specific context
-  current_user=""
+  if [[ ! -f "$config_file" ]]; then
+    if [[ "$config_file" == "$MACHINES_ENABLED_DIR/*" ]]; then
+        echo "[INFO] No machine configuration files found in $MACHINES_ENABLED_DIR."
+    else
+        echo "[WARN] Skipping non-file in MACHINES_ENABLED_DIR: $config_file"
+    fi
+    continue 
+  fi
+  
+  # For each new file, reset machine context from previous file
+  current_user="" 
   current_host=""
   backup_paths=() 
 
   while IFS= read -r line || [[ -n "$line" ]]; do
-    line="${line%%#*}" # Remove comments
-    line="${line#"${line%%[![:space:]]*}"}" # Remove leading whitespace
-    line="${line%"${line##*[![:space:]]}"}"  # Remove trailing whitespace
-    [[ -z "$line" ]] && continue # Skip empty or comment-only lines
+    line="${line%%#*}"; line="${line#"${line%%[![:space:]]*}"}"; line="${line%"${line##*[![:space:]]}"}"; [[ -z "$line" ]] && continue 
 
     if [[ "$line" =~ ^\[(.+)@(.+)\]$ ]]; then
-      # Before processing a new machine, flush any pending backups for the previous one
-      if [[ -n "$current_user" && -n "$current_host" ]]; then
-        flush_backup
-        backup_paths=() # Ensure paths are reset after flush
+      if [[ -n "$current_user" && -n "$current_host" ]]; then # Flush previous machine in this file
+        flush_backup || echo "[WARN] A problem occurred in flush_backup for $current_user@$current_host (file: $config_file), continuing."
+        backup_paths=() 
       fi
-      current_user="${BASH_REMATCH[1]}"
-      current_host="${BASH_REMATCH[2]}"
+      current_user="${BASH_REMATCH[1]}"; current_host="${BASH_REMATCH[2]}"
       current_exclude="$EXCLUDES_DIR/$current_user@$current_host"
-      echo # for spacing
-      echo "Backup Engine: Processing machine: $current_user@$current_host"
+      echo; echo "Backup Engine: Processing machine: $current_user@$current_host from $config_file"
+      machine_processed_count=$((machine_processed_count + 1))
       continue
     fi
 
     if [[ "$line" == src=* && -n "$current_user" && -n "$current_host" ]]; then
       raw_path="${line#src=}"
-      # Expand ~ and variables, but be cautious with full globstar if not intended for all src
-      # Using eval for this is powerful but requires trusted input in config files.
+      # Using eval for path expansion; ensure config files are trusted.
       expanded_path=$(eval echo "$raw_path")
       backup_paths+=($expanded_path)
     fi
   done < "$config_file"
   
-  # After processing all lines in a config file, flush any pending backups for that machine
+  # After processing all lines in the current config file, flush any pending backups for the last machine in it.
   if [[ -n "$current_user" && -n "$current_host" ]]; then
-    flush_backup
+    flush_backup || echo "[WARN] A problem occurred in flush_backup for $current_user@$current_host (end of file: $config_file), continuing."
   fi
 done
 
-
-# Post-backup hooks
-if [[ -d "$HOOKS_DIR" ]]; then
-  # Collect all unique target machine backup directories that were actually processed
-  declare -a hook_target_dirs_final=()
-  for path in "${target_machine_roots[@]}"; do
-    # Check if the directory actually exists (i.e., was likely processed)
-    # This is a simple check; more robust would be to track success.
-    if [[ -d "$path" ]]; then 
-      hook_target_dirs_final+=("$path")
-    fi
-  done
-  
-  # Ensure unique paths are passed to hooks (though target_machine_roots values should be unique machine roots)
-  # This step might be redundant if target_machine_roots values are inherently unique.
-  # Using process substitution with sort -u to get unique list.
-  IFS=$'\n' read -d '' -ra unique_final_paths < <(printf "%s\n" "${hook_target_dirs_final[@]}" | sort -u && printf '\0')
-
-  if [[ ${#unique_final_paths[@]} -gt 0 ]]; then
-    for hook in "$HOOKS_DIR"/*; do
-      if [[ -x "$hook" ]]; then
-        echo # for spacing
-        echo "Hooks: Running post-backup hook: $hook"
-        # Pass each unique target directory as an argument to the hook
-        # The hook script itself will iterate through "$@"
-        "$hook" "${unique_final_paths[@]}"
-      else
-        echo # for spacing
-        echo "Hooks: Skipping non-executable hook: $hook"
-      fi
-    done
-  fi
-else
-  echo # for spacing
-  echo "Hooks: No hooks directory found at $HOOKS_DIR, or directory is empty."
+if [[ "$machine_processed_count" -eq 0 && "$MACHINES_ENABLED_DIR/*" != "$config_file" && "$config_file" != "" ]]; then
+    # This condition might be tricky if MACHINES_ENABLED_DIR was empty and glob returned literal.
+    # The earlier check for empty MACHINES_ENABLED_DIR handles that better.
+    # If loop ran but machine_processed_count is 0, it means no [user@host] sections were found/parsed.
+    echo "[INFO] No valid [user@host] sections found in processed configuration files."
 fi
 
-echo # for spacing
-echo "Backup Engine: All operations complete."
+
+# Post-backup hooks
+# Check if any machines were processed and resulted in target roots
+if [[ ${#target_machine_roots[@]} -eq 0 ]]; then
+    if [[ "$machine_processed_count" -gt 0 ]]; then
+        echo "[INFO] Machines were processed, but no valid backup target directories were recorded. Skipping hooks."
+    else
+        echo "[INFO] No machines processed. Skipping hooks."
+    fi
+else
+    if [[ -d "$HOOKS_DIR" ]]; then
+      declare -a hook_target_dirs_final=()
+      for path_val in "${target_machine_roots[@]}"; do if [[ -d "$path_val" ]]; then hook_target_dirs_final+=("$path_val"); fi; done
+      IFS=$'\n' read -d '' -ra unique_final_paths < <(printf "%s\n" "${hook_target_dirs_final[@]}" | sort -u && printf '\0')
+
+      if [[ ${#unique_final_paths[@]} -gt 0 ]]; then
+        for hook in "$HOOKS_DIR"/*; do 
+          if [[ -f "$hook" && -x "$hook" ]]; then
+            echo; echo "Hooks: Running post-backup hook: $hook on targets: ${unique_final_paths[*]}"
+            "$hook" "${unique_final_paths[@]}"
+          elif [[ -f "$hook" ]]; then 
+            echo; echo "Hooks: Skipping non-executable file hook: $hook"
+          else 
+            echo; echo "Hooks: Skipping non-file or non-executable item in hooks directory: $hook"
+          fi
+        done
+      else 
+        echo; echo "Hooks: No valid target directories available for hooks after processing."
+      fi
+    else 
+      echo; echo "Hooks: No hooks directory found at $HOOKS_DIR, or directory is empty."
+    fi
+fi
+echo; echo "Backup Engine: All operations complete."

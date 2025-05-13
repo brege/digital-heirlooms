@@ -4,7 +4,7 @@
 config/backup.env
 
 test/target/
-
+test/test_config_root/
 # Ignore OS or editor temp files
 *~
 .DS_Store

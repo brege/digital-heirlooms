@@ -23,7 +23,7 @@ This toolkit simplifies backing up directories from local or remote machines, us
 Clone the repo and run the setup script:
 
 ```bash
-git clone [https://github.com/brege/backup-kit](https://github.com/brege/backup-kit) ~/backup-kit
+git clone https://github.com/brege/backup-kit
 cd ~/backup-kit
 ./setup
 ```

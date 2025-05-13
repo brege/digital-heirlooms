@@ -5,140 +5,182 @@ set -euo pipefail
 
 # Resolve script/repo directory
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-CONFIG_DIR_DEFAULT="$HOME/.config/backup-kit"
-CONFIG_DIR="${CONFIG_DIR:-$CONFIG_DIR_DEFAULT}"
+CONFIG_DIR_USER_DEFAULT="$HOME/.config/backup-kit"
+CONFIG_DIR_USER="${CONFIG_DIR_USER_OVERRIDE:-$CONFIG_DIR_USER_DEFAULT}" 
 
-# Determine system identity
 USER_NAME="$(whoami)"
 HOST_NAME="$(hostname -s)"
 IDENT="${USER_NAME}@${HOST_NAME}"
 
-# Template patterns
 PLACEHOLDER="__user__@__hostname__"
-PLACEHOLDER_ESCAPED="__user__@__hostname__"
 
-# Paths
-ENV_SRC_TEMPLATE="$SCRIPT_DIR/config/env/${PLACEHOLDER}_.env.template"
-ENV_DEST="$CONFIG_DIR/env/${IDENT}_.env"
+# Paths for USER configuration (non-test mode)
+USER_ENV_SRC_TEMPLATE="$SCRIPT_DIR/config/env/${PLACEHOLDER}_.env.template"
+USER_ENV_DEST="$CONFIG_DIR_USER/env/${IDENT}_.env"
+USER_EXCLUDES_SRC_TEMPLATE="$SCRIPT_DIR/config/excludes/${PLACEHOLDER}"
+USER_EXCLUDES_DEST="$CONFIG_DIR_USER/excludes/${IDENT}"
+USER_MACHINE_SRC_TEMPLATE="$SCRIPT_DIR/config/machines-available/${PLACEHOLDER}"
+USER_MACHINE_DEST="$CONFIG_DIR_USER/machines-available/${IDENT}"
+KIT_DEFAULT_EXCLUDE_SRC="$SCRIPT_DIR/config/excludes/default.exclude"
+USER_DEFAULT_EXCLUDE_DEST="$CONFIG_DIR_USER/excludes/default.exclude"
+REPO_CONFIG_BACKUP_ENV_SYMLINK_TARGET="$USER_ENV_DEST"
+REPO_CONFIG_BACKUP_ENV_SYMLINK_NAME="$SCRIPT_DIR/config/backup.env"
+USER_HOOKS_KIT_SRC_DIR="$SCRIPT_DIR/config/hooks"
+USER_HOOKS_AVAILABLE_DIR="$CONFIG_DIR_USER/hooks-available"
+USER_HOOKS_ENABLED_DIR="$CONFIG_DIR_USER/hooks-enabled"
 
-EXCLUDES_SRC_TEMPLATE="$SCRIPT_DIR/config/excludes/${PLACEHOLDER}"
-EXCLUDES_DEST="$CONFIG_DIR/excludes/${IDENT}"
-
-MACHINE_SRC_TEMPLATE="$SCRIPT_DIR/config/machines-available/${PLACEHOLDER}"
-MACHINE_DEST="$CONFIG_DIR/machines-available/${IDENT}"
-
-DEFAULT_EXCLUDE_SRC="$SCRIPT_DIR/config/excludes/default.exclude"
-DEFAULT_EXCLUDE_DEST="$CONFIG_DIR/excludes/default.exclude"
-
-SYMLINK_TARGET="$ENV_DEST"
-SYMLINK_NAME="$SCRIPT_DIR/config/backup.env"
-
-HOOKS_SRC_DIR="$SCRIPT_DIR/config/hooks"
-HOOKS_AVAILABLE_DIR="$CONFIG_DIR/hooks-available"
-HOOKS_ENABLED_DIR="$CONFIG_DIR/hooks-enabled"
-
-# Handle --force flag
 FORCE=false
+RUN_TEST=false
+MODE="setup" 
+
 if [[ "${1:-}" == "--force" ]]; then
     FORCE=true
-    echo "⚠️  Force mode enabled: existing files will be overwritten"
+    MODE="setup --force"
+    shift 
 fi
-
-echo "📦 Setting up backup-kit config for: $IDENT"
-echo "📁 Config directory: $CONFIG_DIR"
-
-# Create needed subdirectories
-mkdir -p "$CONFIG_DIR/env" "$CONFIG_DIR/excludes" "$CONFIG_DIR/machines-available" "$HOOKS_AVAILABLE_DIR" "$HOOKS_ENABLED_DIR"
-
-# Copy and template the .env file
-if [[ "$FORCE" = true || ! -f "$ENV_DEST" ]]; then
-    sed "s/$PLACEHOLDER_ESCAPED/$IDENT/g" "$ENV_SRC_TEMPLATE" > "$ENV_DEST"
-    echo "✅ Wrote: $ENV_DEST"
-else
-    echo "⚠️  Skipped: $ENV_DEST already exists (use --force to overwrite)"
-fi
-
-# Copy and template the excludes file
-if [[ "$FORCE" = true || ! -f "$EXCLUDES_DEST" ]]; then
-    sed "s/$PLACEHOLDER_ESCAPED/$IDENT/g" "$EXCLUDES_SRC_TEMPLATE" > "$EXCLUDES_DEST"
-    echo "✅ Wrote: $EXCLUDES_DEST"
-else
-    echo "⚠️  Skipped: $EXCLUDES_DEST already exists (use --force to overwrite)"
-fi
-
-# Copy and template the machine config
-if [[ "$FORCE" = true || ! -f "$MACHINE_DEST" ]]; then
-    sed \
-      -e "s/$PLACEHOLDER_ESCAPED/$IDENT/g" \
-      -e "s|__script_dir__|$SCRIPT_DIR|g" \
-      "$MACHINE_SRC_TEMPLATE" > "$MACHINE_DEST"
-    # Now update the src path in the machine config
-    sed -i "s|src=\$CONFIG_DIR/test/source|src=\$SCRIPT_DIR/test/source|g" "$MACHINE_DEST"
-    echo "✅ Wrote: $MACHINE_DEST"
-else
-    echo "⚠️  Skipped: $MACHINE_DEST already exists (use --force to overwrite)"
-fi
-
-# Always copy default.exclude unless it exists and force is not set
-if [[ "$FORCE" = true || ! -f "$DEFAULT_EXCLUDE_DEST" ]]; then
-    cp "$DEFAULT_EXCLUDE_SRC" "$DEFAULT_EXCLUDE_DEST"
-    echo "✅ Copied: $DEFAULT_EXCLUDE_DEST"
-else
-    echo "⚠️  Skipped: $DEFAULT_EXCLUDE_DEST already exists (use --force to overwrite)"
-fi
-
-# Copy hooks to hooks-available if missing or --force is set
-if [[ "$FORCE" = true || ! -d "$HOOKS_AVAILABLE_DIR" || -z "$(ls -A "$HOOKS_AVAILABLE_DIR")" ]]; then
-  cp -a "$HOOKS_SRC_DIR/." "$HOOKS_AVAILABLE_DIR"
-  echo "✅ Copied hooks to: $HOOKS_AVAILABLE_DIR"
-else
-  echo "⚠️  Skipped: hooks-available already exists and is not empty (use --force to overwrite)"
-fi
-
-# Create or update symlink for backup.env
-ln -sf "$SYMLINK_TARGET" "$SYMLINK_NAME"
-echo "🔗 Linked: $SYMLINK_NAME → $SYMLINK_TARGET"
-
-# ============================
-# 🧪 Optional unit test (if --test is passed)
-# ============================
-
 if [[ "${1:-}" == "--test" ]]; then
+    RUN_TEST=true
+    MODE="test"
+fi
+
+# MAIN USER SETUP LOGIC (Non-Test)
+if [[ "$MODE" == "setup" || "$MODE" == "setup --force" ]]; then
+    echo "Setting up backup-kit user configuration for: $IDENT"
+    echo "User config directory: $CONFIG_DIR_USER"
+
+    mkdir -p "$CONFIG_DIR_USER/env" \
+             "$CONFIG_DIR_USER/excludes" \
+             "$CONFIG_DIR_USER/machines-available" \
+             "$USER_HOOKS_AVAILABLE_DIR" \
+             "$USER_HOOKS_ENABLED_DIR"
+
+    if [[ "$FORCE" = true || ! -f "$USER_ENV_DEST" ]]; then
+        if [[ -f "$USER_ENV_SRC_TEMPLATE" ]]; then
+            sed "s/$PLACEHOLDER/$IDENT/g" "$USER_ENV_SRC_TEMPLATE" > "$USER_ENV_DEST"
+            if ! grep -q "^CONFIG_DIR=" "$USER_ENV_DEST"; then
+                echo "" >> "$USER_ENV_DEST"; echo "# Path to the root of this user's Backup-Kit configuration" >> "$USER_ENV_DEST"; echo "CONFIG_DIR=\"$CONFIG_DIR_USER\"" >> "$USER_ENV_DEST"; fi
+            echo "Wrote user env: $USER_ENV_DEST"
+        else echo "[WARN] User env template not found: $USER_ENV_SRC_TEMPLATE. Cannot create $USER_ENV_DEST."; fi
+    else echo "Skipped: $USER_ENV_DEST already exists (use --force to overwrite)"; fi
+
+    if [[ "$FORCE" = true || ! -f "$USER_EXCLUDES_DEST" ]]; then
+        if [[ -f "$USER_EXCLUDES_SRC_TEMPLATE" ]]; then sed "s/$PLACEHOLDER/$IDENT/g" "$USER_EXCLUDES_SRC_TEMPLATE" > "$USER_EXCLUDES_DEST"; echo "Wrote user excludes: $USER_EXCLUDES_DEST";
+        else touch "$USER_EXCLUDES_DEST"; echo "Created empty user excludes: $USER_EXCLUDES_DEST (template $USER_EXCLUDES_SRC_TEMPLATE not found)"; fi
+    else echo "Skipped: $USER_EXCLUDES_DEST already exists (use --force to overwrite)"; fi
+
+    if [[ "$FORCE" = true || ! -f "$USER_MACHINE_DEST" ]]; then
+        if [[ -f "$USER_MACHINE_SRC_TEMPLATE" ]]; then
+            sed -e "s/$PLACEHOLDER/$IDENT/g" \
+                -e "s|^src=.*# TODO: Edit this.*|src=/home/$USER_NAME # TODO: Please edit this path to your actual data source|" \
+                -e "s|exclude-from=.*__hostname__/excludes/$PLACEHOLDER|exclude-from=$CONFIG_DIR_USER/excludes/$IDENT|" \
+                "$USER_MACHINE_SRC_TEMPLATE" > "$USER_MACHINE_DEST"
+            echo "Wrote user machine config: $USER_MACHINE_DEST"
+        else 
+            echo "[$IDENT]" > "$USER_MACHINE_DEST"; echo "src=/home/$USER_NAME # TODO: Change this to the actual path you want to back up" >> "$USER_MACHINE_DEST"; echo "exclude-from=$CONFIG_DIR_USER/excludes/$IDENT" >> "$USER_MACHINE_DEST"
+            echo "Created placeholder user machine config: $USER_MACHINE_DEST (template $USER_MACHINE_SRC_TEMPLATE not found)"
+        fi
+        echo "Action required: Please review and edit $USER_MACHINE_DEST with actual paths to back up."
+    else echo "Skipped: $USER_MACHINE_DEST already exists (use --force to overwrite)"; fi
+
+    if [[ "$FORCE" = true || ! -f "$USER_DEFAULT_EXCLUDE_DEST" ]]; then
+        if [[ -f "$KIT_DEFAULT_EXCLUDE_SRC" ]]; then cp "$KIT_DEFAULT_EXCLUDE_SRC" "$USER_DEFAULT_EXCLUDE_DEST"; echo "Copied default.exclude to: $USER_DEFAULT_EXCLUDE_DEST";
+        else echo "[WARN] Kit's default exclude source file not found: $KIT_DEFAULT_EXCLUDE_SRC"; fi
+    else echo "Skipped: $USER_DEFAULT_EXCLUDE_DEST already exists (use --force to overwrite)"; fi
+    
+    if [[ "$FORCE" = true || ! -d "$USER_HOOKS_AVAILABLE_DIR" || -z "$(ls -A "$USER_HOOKS_AVAILABLE_DIR" 2>/dev/null)" ]]; then
+      if [[ -d "$USER_HOOKS_KIT_SRC_DIR" ]]; then cp -a "$USER_HOOKS_KIT_SRC_DIR/." "$USER_HOOKS_AVAILABLE_DIR/"; echo "Copied kit hooks to user's: $USER_HOOKS_AVAILABLE_DIR";
+      else echo "[WARN] Kit hooks source directory not found: $USER_HOOKS_KIT_SRC_DIR"; fi
+    else echo "Skipped copying kit hooks: $USER_HOOKS_AVAILABLE_DIR already exists and is not empty (use --force to overwrite)"; fi
+
+    if [[ -f "$USER_ENV_DEST" ]]; then
+        ln -sf "$REPO_CONFIG_BACKUP_ENV_SYMLINK_TARGET" "$REPO_CONFIG_BACKUP_ENV_SYMLINK_NAME"
+        echo "Linked repository's default $REPO_CONFIG_BACKUP_ENV_SYMLINK_NAME -> $REPO_CONFIG_BACKUP_ENV_SYMLINK_TARGET"
+    else
+        echo "[WARN] User env file $USER_ENV_DEST not found. Skipping symlink for $REPO_CONFIG_BACKUP_ENV_SYMLINK_NAME."
+        echo "       Manually link after creating env: ln -sf \"$USER_ENV_DEST\" \"$REPO_CONFIG_BACKUP_ENV_SYMLINK_NAME\""
+    fi
+
+    echo "User setup complete. Summary:"
+    echo "  User configuration root: $CONFIG_DIR_USER"
+    echo "  Primary environment file: $USER_ENV_DEST"
+    echo "  Repository default env symlink: $REPO_CONFIG_BACKUP_ENV_SYMLINK_NAME -> $REPO_CONFIG_BACKUP_ENV_SYMLINK_TARGET"
+    echo "To enable your machine: $SCRIPT_DIR/bin/machine_state.sh --config \"$CONFIG_DIR_USER\" enable $IDENT"
+    echo "To enable hooks, symlink from $USER_HOOKS_AVAILABLE_DIR to $USER_HOOKS_ENABLED_DIR"
+fi
+
+# ============================
+# 🧪 Optional Test Run
+# ============================
+
+if [[ "$RUN_TEST" == true ]]; then
   echo ""
-  echo "🧪 Running unit test to verify setup..."
-  echo "→ This will back up dummy test files from test/source/ to test/target/"
-  echo "→ Dry run mode is enabled by default, so no real sync will occur unless changed in backup.env"
+  echo "Running Backup-Kit Test..."
+
+  TEST_DIR="$SCRIPT_DIR/test"; TEST_CONFIG_ROOT="$TEST_DIR/test_config_root"; TEST_ENV_FILE="$TEST_CONFIG_ROOT/backup.env"
+  # TEST_SOURCE_DATA_DIR is the pre-existing directory in your repo
+  TEST_SOURCE_DATA_DIR="$TEST_DIR/source"
+  TEST_TARGET_OUTPUT_DIR="$TEST_DIR/target"; TEST_ARCHIVE_OUTPUT_DIR="$TEST_TARGET_OUTPUT_DIR/archive"
+  TEST_MACHINES_AVAILABLE_DIR="$TEST_CONFIG_ROOT/machines-available"; TEST_MACHINES_ENABLED_DIR="$TEST_CONFIG_ROOT/machines-enabled"
+  TEST_EXCLUDES_DIR="$TEST_CONFIG_ROOT/excludes"; TEST_HOOKS_SRC_DIR="$SCRIPT_DIR/config/hooks"; TEST_HOOKS_AVAILABLE_DIR="$TEST_CONFIG_ROOT/hooks-available"; TEST_HOOKS_ENABLED_DIR="$TEST_CONFIG_ROOT/hooks-enabled"
+  TEST_MACHINE_NAME="test@localhost" 
+
+  echo "Preparing isolated test environment in: $TEST_CONFIG_ROOT"
+  if [[ -d "$TEST_TARGET_OUTPUT_DIR" ]]; then echo "Cleaning up previous test target: $TEST_TARGET_OUTPUT_DIR"; rm -rf "$TEST_TARGET_OUTPUT_DIR"; fi
+  mkdir -p "$TEST_TARGET_OUTPUT_DIR"; mkdir -p "$TEST_ARCHIVE_OUTPUT_DIR"
+  mkdir -p "$TEST_CONFIG_ROOT/env" "$TEST_MACHINES_AVAILABLE_DIR" "$TEST_MACHINES_ENABLED_DIR" "$TEST_EXCLUDES_DIR" "$TEST_HOOKS_AVAILABLE_DIR" "$TEST_HOOKS_ENABLED_DIR"
+
+  echo "Creating test environment file: $TEST_ENV_FILE"
+  cat > "$TEST_ENV_FILE" << EOF
+# Test Environment for Backup-Kit (auto-generated by setup --test)
+LOCAL_TARGET_BASE="$TEST_TARGET_OUTPUT_DIR"
+REMOTE_TARGET_BASE="" 
+LOCAL_ARCHIVE_BASE="$TEST_ARCHIVE_OUTPUT_DIR"
+REMOTE_ARCHIVE_BASE=""
+DRY_RUN="false"
+EOF
+
+  # Create test machine-specific exclude file
+  TEST_MACHINE_EXCLUDE_FILE_NAME="$(basename "$TEST_MACHINE_NAME").exclude" 
+  TEST_MACHINE_EXCLUDE_FILE_PATH="$TEST_EXCLUDES_DIR/$TEST_MACHINE_EXCLUDE_FILE_NAME"
+  echo "Creating test exclude file: $TEST_MACHINE_EXCLUDE_FILE_PATH"
+  cat > "$TEST_MACHINE_EXCLUDE_FILE_PATH" << EOF
+# Test excludes for $TEST_MACHINE_NAME
+*Z.epub
+dirB/myfile1.opus
+EOF
+
+  TEST_MACHINE_FILE_PATH="$TEST_MACHINES_AVAILABLE_DIR/$(basename "$TEST_MACHINE_NAME")"
+  echo "Creating test machine config: $TEST_MACHINE_FILE_PATH (with excludes enabled)"
+  cat > "$TEST_MACHINE_FILE_PATH" << EOF
+# Test machine configuration for Backup-Kit ($TEST_MACHINE_NAME)
+# This file is auto-generated by setup --test
+[$TEST_MACHINE_NAME]
+src=$TEST_SOURCE_DATA_DIR/dirA
+src=$TEST_SOURCE_DATA_DIR/dirB
+src=$TEST_SOURCE_DATA_DIR/dirC 
+exclude-from=$TEST_EXCLUDES_DIR/$TEST_MACHINE_EXCLUDE_FILE_NAME
+EOF
+  # **REMOVED LINES THAT CREATE DUMMY FILES IN $TEST_SOURCE_DATA_DIR**
+  # The script will now rely on the pre-existing files in $SCRIPT_DIR/test/source/
+
+  echo "Enabling test machine config for '$TEST_MACHINE_NAME' in test environment..."
+  ln -sf "../machines-available/$(basename "$TEST_MACHINE_NAME")" "$TEST_MACHINES_ENABLED_DIR/$(basename "$TEST_MACHINE_NAME")"
+
+  echo "Setting up hooks for test environment..."
+  if [[ -d "$TEST_HOOKS_SRC_DIR" ]]; then cp -a "$TEST_HOOKS_SRC_DIR/." "$TEST_HOOKS_AVAILABLE_DIR/"; else echo "[WARN] Kit hooks source dir not found: $TEST_HOOKS_SRC_DIR."; fi
+  TEST_HOOK_TO_ENABLE="90_archive.sh" 
+  if [[ -f "$TEST_HOOKS_AVAILABLE_DIR/$TEST_HOOK_TO_ENABLE" ]]; then ln -sf "../hooks-available/$TEST_HOOK_TO_ENABLE" "$TEST_HOOKS_ENABLED_DIR/$TEST_HOOK_TO_ENABLE"; echo "Enabled test hook: $TEST_HOOK_TO_ENABLE";
+  else echo "[WARN] Test hook $TEST_HOOK_TO_ENABLE not found in $TEST_HOOKS_AVAILABLE_DIR. Skipping link."; fi
+
+  echo "Executing run_backup.sh with isolated test configuration: $TEST_CONFIG_ROOT"
+  "$SCRIPT_DIR/bin/run_backup.sh" --config "$TEST_CONFIG_ROOT"
+
+  if [[ -L "$TEST_HOOKS_ENABLED_DIR/$TEST_HOOK_TO_ENABLE" ]]; then rm "$TEST_HOOKS_ENABLED_DIR/$TEST_HOOK_TO_ENABLE"; echo "Unlinked test hook: $TEST_HOOK_TO_ENABLE"; fi
+
   echo ""
-
-  echo "🔗 Enabling test machine config..."
-  "$SCRIPT_DIR/bin/machine_state.sh" enable "$IDENT"
-
-  ENV_FILE="$CONFIG_DIR/env/${IDENT}_.env"
-  MACHINE_FILE="$CONFIG_DIR/machines-available/${IDENT}"
-
-  sed -i "s|LOCAL_DEST_DIR=.*|LOCAL_DEST_DIR=\"$SCRIPT_DIR/test/target\"|" "$ENV_FILE"
-  sed -i "s|LOCAL_DEST_DIR=.*|LOCAL_DEST_DIR=\"$SCRIPT_DIR/test/target\"|" "$MACHINE_FILE"
-
-  # Link test hook only if not already linked
-  TEST_HOOK="90_archive.sh"
-  if [[ ! -e "$HOOKS_ENABLED_DIR/$TEST_HOOK" ]]; then
-    ln -s "$HOOKS_AVAILABLE_DIR/$TEST_HOOK" "$HOOKS_ENABLED_DIR/$TEST_HOOK"
-    HOOK_WAS_LINKED=true
-    echo "🔗 Temporarily enabled test hook: $TEST_HOOK"
-  else
-    HOOK_WAS_LINKED=false
-    echo "⚠️  Skipped: hook $TEST_HOOK already linked"
-  fi
-
-  echo "🚀 Executing run_backup.sh..."
-  "$SCRIPT_DIR/bin/run_backup.sh"
-
-  if [[ "$HOOK_WAS_LINKED" == true ]]; then
-    rm "$HOOKS_ENABLED_DIR/$TEST_HOOK"
-    echo "🧹 Unlinked test hook: $TEST_HOOK"
-  fi
-
-  echo ""
-  echo "✅ Unit test complete. Check 'test/target/' for backup results."
-  echo "💡 You can now edit your config in ~/.config/backup-kit/ and re-run ./bin/run_backup.sh"
+  echo "Backup-Kit Test complete."
+  echo "Output files should be in: $TEST_TARGET_OUTPUT_DIR"
+  echo "Archives (if any) should be in: $TEST_ARCHIVE_OUTPUT_DIR"
+  echo "Configuration used for test: $TEST_CONFIG_ROOT"
+  echo "This test did NOT affect your user configuration in $CONFIG_DIR_USER"
 fi
