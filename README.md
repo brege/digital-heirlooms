@@ -23,7 +23,7 @@ This toolkit simplifies backing up directories from local or remote machines, us
 Clone the repo and run the setup script:
 
 ```bash
-git clone https://github.com/brege/backup-kit ~/backup-kit
+git clone [https://github.com/brege/backup-kit](https://github.com/brege/backup-kit) ~/backup-kit
 cd ~/backup-kit
 ./setup
 ```
@@ -40,7 +40,7 @@ This initializes your user config at `~/.config/backup-kit/`.
 │   ├── default.exclude
 │   └── user@hostname
 ├── hooks-available
-│   ├── 01_crontab.sh
+│   ├── 10_crontab.sh
 │   └── 90_archive.sh
 ├── hooks-enabled
 ├── machines-available
@@ -63,19 +63,21 @@ This links a test configuration and runs a local backup from `test/source/` to `
 
 ## Environment File
 
-The active environment file is:
+The active environment file is symlinked to `config/backup.env` within the Backup-Kit directory, typically pointing to a file like:
 
 ```bash
 ~/.config/backup-kit/env/<user@host>_.env
 ```
 
-It defines local/remote base paths and archive destinations. Customize variables like `REMOTE_PUSH_TARGET` and `REMOTE_ARCHIVE_BASE`.
+It defines local/remote base paths for backups (`LOCAL_TARGET_BASE`, `REMOTE_TARGET_BASE`) and archive destinations (`LOCAL_ARCHIVE_BASE`, `REMOTE_ARCHIVE_BASE`). Customize these variables as needed. For example, `REMOTE_TARGET_BASE` might be `user@remoteserver:/backup/dest` and `REMOTE_ARCHIVE_BASE` could be `user@remoteserver:/backup/archives`.
 
-To support multiple push targets, use separate config dirs (e.g., `~/.config/backup-kit-to-nas`, etc.). Run backups against each:
+To support multiple push targets or distinct configurations, you can use separate main configuration directories (e.g., `~/.config/backup-kit-main`, `~/.config/backup-kit-alternate`) and run backups against each using the `--config` flag:
 
 ```bash
-./run_backup.sh --config ~/.config/backup-kit-to-nas
+./bin/run_backup.sh --config ~/.config/backup-kit-alternate
 ```
+
+Alternatively, use the `bin/use_env.sh` script to change the `config/backup.env` symlink to point to different environment files within your active configuration directory.
 
 ## Machine and Exclude Files
 
@@ -104,12 +106,12 @@ A matching exclude file might look like:
 Enable a machine by symlinking its config to `machines-enabled/`. Use `machine_state.sh` to manage symlinks:
 
 ```bash
-./machine_state.sh enable user@hostname
+./bin/machine_state.sh enable user@hostname
 ```
 
 ## Hooks
 
-Hooks live in `hooks-available/`. During setup, any you want to run must be linked into `hooks-enabled/`.
+Hooks live in `hooks-available/`. During setup, any you want to run must be symlinked into `hooks-enabled/`.
 
 Hook filenames should start with a numeric prefix to define execution order, like:
 
@@ -118,61 +120,69 @@ Hook filenames should start with a numeric prefix to define execution order, lik
 90_archive.sh   # archive the synced output
 ```
 
-You can write your own custom hooks—just place them in `hooks-available/` and symlink to `hooks-enabled/` as needed. The prefix ensures proper execution order, and all hooks receive environment variables from `backup.env`.
+You can write your own custom hooks—just place them in `hooks-available/` and symlink to `hooks-enabled/` as needed. The prefix ensures proper execution order, and all hooks receive environment variables from the active `backup.env` file. Hooks are passed the paths to the root directories where each machine's data was backed up.
 
 ## Service Integration
 
 The setup script can install a `systemd` user service and timer. To enable it:
 
 ```bash
-systemctl --user daemon-reexec
-systemctl --user enable backup.timer
-systemctl --user start backup.timer
+systemctl --user daemon-reexec # Run if you modified or added user service files
+systemctl --user enable backup-kit.timer
+systemctl --user start backup-kit.timer
 ```
 
 To check the timer:
 
 ```bash
-systemctl --user status backup.timer
+systemctl --user list-timers backup-kit.timer
 ```
 
-Edit the timer file in your config to customize frequency (default: daily).
+Edit the timer file (e.g., `~/.config/systemd/user/backup-kit.timer` if installed via setup, or the one in the repo's `systemd/` directory before setup) to customize frequency (default: daily).
 
 ## Backup Logic
 
 `bin/run_backup.sh` handles the core logic:
 
-- Sources `backup.env` (which is linked to `~/.config/backup-kit/env/user@hostname_.env`) to load config
-- Reads machines from `machines-enabled/`
-- Rsyncs each listed `src` while respecting excludes
-- Executes any hooks post-rsync
+  - Sources the active `backup.env` file (symlinked at `config/backup.env`, typically pointing to a file within `~/.config/backup-kit/env/`) to load its configuration variables.
+  - Reads enabled machine configurations from the `machines-enabled/` directory.
+  - For each machine:
+      - Rsyncs each listed `src` path while respecting global (`excludes/default.exclude`) and machine-specific exclude files (e.g., `excludes/user@hostname`).
+      - **Staging Behavior**:
+          - If only `LOCAL_TARGET_BASE` is defined, data is synced to this local path.
+          - If only `REMOTE_TARGET_BASE` is defined, data is synced directly to this remote path (requires SSH access configured for the target).
+          - If both `LOCAL_TARGET_BASE` (for local staging) and `REMOTE_TARGET_BASE` are defined, data for the current machine is first synced to the local stage. Immediately after the local staging for that machine is complete, its staged data is then pushed (rsynced) to the `REMOTE_TARGET_BASE`. This sequence (local stage then remote push) completes for one machine before the script proceeds to the next.
+  - After all machines are processed, it executes any enabled hook scripts found in the `hooks-enabled/` directory. Each hook is passed the paths to the root directories where each machine's data was backed up (e.g., `/path/to/target/user@hostA`, `/path/to/target/user@hostB`).
 
-Rsync is incremental. Hooks like `90_archive.sh` will overwrite the archive by default unless modified to version them.
+Rsync operations are incremental by default, preserving attributes and efficiently transferring only changed files. Note that the standard `90_archive.sh` hook, by default, will overwrite an existing archive for a given machine if run multiple times, unless the hook script itself is modified to implement a versioning scheme (e.g., by including timestamps in archive filenames).
 
 ## Bloatscan Tool
 
 `bloatscan.sh` helps identify large subdirectories that might be wasteful to back up:
 
 ```bash
-./bloatscan.sh /home/user --depth=3 --limit=10
+./bin/bloatscan.sh /home/user --depth=3 --limit=10
 ```
+
+This command scans `/home/user` down to a depth of 3 levels and shows the top 10 largest directories.
 
 Run remotely:
 
 ```bash
-cat bin/bloatscan.sh | ssh user@host 'bash -s' -- /home/user --depth=2 --limit=5
+cat bin/bloatscan.sh | ssh user@host 'bash -s -- /remote/path/to/scan --depth=2 --limit=5'
 ```
 
-Use it iteratively: look for folders with massive file counts or disk usage. Consider whether those are really worth preserving—often they come from package managers like `npm`, `pip`, or `node_modules`, and can be reinstalled later.
+The remote execution also supports flags like `--depth` and `--limit` after the path.
+
+Use it iteratively: look for folders with massive file counts or disk usage. Consider whether those are really worth preserving—often they come from package managers like `npm`, `pip`, or `node_modules`, and can be reinstalled later. The tool can also use an exclude file similar to the backup excludes (by default `~/.config/backup-kit/excludes/user@host` or specify with `--excludes-file=path/to/file`).
 
 ## Notes
 
-- Rsync is incremental; archives are not yet versioned
-- Backup doesn't reinstall software, just preserves config and data
-- To test changes, use `--test` to isolate from real data
+  - Rsync is incremental; archives created by the default `90_archive.sh` hook are not versioned by default.
+  - This backup solution primarily preserves configuration and data files. It does not reinstall software packages.
+  - To test changes to your backup configuration (e.g., new exclude rules), use the `./setup --test` mode to run a simulated backup against test data, which isolates the test from your real data and production backup destination.
 
 ## License
 
 This project is licensed under the MIT License.
-
 
