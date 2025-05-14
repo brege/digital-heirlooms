@@ -140,6 +140,34 @@ systemctl --user list-timers backup-kit.timer
 
 Edit the timer file (e.g., `~/.config/systemd/user/backup-kit.timer` if installed via setup, or the one in the repo's `systemd/` directory before setup) to customize frequency (default: daily).
 
+
+## Origins / Motivation
+
+## Motivations and Design Philosophy
+
+Backup Kit was born from several personal experiences. Early efforts to back up a laptop with limited disk space, often over slow home internet (where upload speeds can be particularly constrained), made just "backing up everything" infeasible. I did have access to other machines, however, where I could stage my backups to another machine with a larger disk.  This naturally led to the need for flexible targets (local or remote staging, remote destinations) to manage data across a growing mesh of personal devices--laptops, home servers, a Raspberry Pi music box.
+
+At another moment, I tried to backup to my laptop to my android phone over the (old) Syncthing app, which introduced a second challenge: it choked on large file counts.  This has since been resolved in a new app, but the constraint forced me to be mindful of 100K+ small files common spread across various package management systems and repositories (e.g., `.git` metadata, `node_modules`). 
+
+### Extracting the "You" in `~/`
+
+The primary, overarching goal is to secure data that is time-consuming to reproduce (like intricate software configurations refined through trial-and-error, or databases for tools like Plex or Beets where indexing is significant) or truly impossible to reproduce bits (personal photos, journals, unique documents, application profiles for Firefox/Thunderbird, and essential keys like SSH/GPG). **This is your heirloom.**
+
+### Ignoring the "Us" in `/`
+
+Conversely, Backup Kit isn't designed to back up what the wider world already has a copy of, or what your system can easily regenerate. This includes things like common system binaries, "Linux ISOs," or easily reinstalled application packages. The former are big files; the latter are high file counts. **This is your furniture.**
+
+  * **Declarative Configuration for Your Heirlooms:** To manage what's backed up, Backup Kit provides a declarative framework. Through simple text files (environment settings, machine definitions, exclude lists), you define *what* heirlooms to secure, *from where*, *to where*, and *what furniture to ignore*. The scripts then imperatively carry out these instructions. This framework helps you apply your backup strategy consistently across devices.
+
+  * **`bloatscan.sh` – Whittling to the Heartwood:** Identifying what to exclude is key. `bloatscan.sh` was developed to help with this, allowing you to "whittle" down the backup set to its essential core. It's okay to be "sloppy" with excludes at first; refining them is a logarithmic pursuit of trimming unnecessary data. Think of it like alphabetizing a physical media collection: a focused effort initially makes long-term maintenance much simpler. This tool helps capture that hard-won knowledge of what's truly important on *your* systems.
+
+  * **Embrace, Don't Reinvent, Core Tools:** Backup Kit leverages robust, well-understood Unix utilities like `rsync` for efficient data transfer and `tar`/`zstd` for archiving. It also sees tools like Syncthing as complementary; for instance, Syncthing can be great for getting data from a phone or laptop to an always-on home server/NAS, which can then be a source for Backup Kit's more structured, asynchronous backups.  And its "Untrusted" feature, coupled with distributed syncing, is fantastic at securing data on a more compromisable machine.
+
+  * **Inspired Management:** The `machines-available`/`machines-enabled` structure offers a nod to the clear and effective configuration style of Nginx, providing a logical way to manage different backup sets or hooks.  This, plus the use of different `--config` paths for different sets, with potentially different hooks, provides a lot of extensibility.
+
+In essence, Backup Kit is a pragmatic, script-based toolkit that's transparent, customizable, and a resource-aware method for extracting digital assets.
+
+
 ## Backup Logic
 
 `bin/run_backup.sh` handles the core logic:
