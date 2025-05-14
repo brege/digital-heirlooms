@@ -11,6 +11,7 @@ This toolkit simplifies backing up directories from local or remote machines, us
 - [Machine and Exclude Files](#machine-and-exclude-files)
 - [Hooks](#hooks)
 - [Service Integration](#service-integration)
+- [Origins / Motivation](#origins-motivation)
 - [Backup Logic](#backup-logic)
 - [Bloatscan Tool](#bloatscan-tool)
 - [Notes](#notes)
@@ -29,6 +30,20 @@ cd ~/backup-kit
 ```
 
 This initializes your user config at `~/.config/backup-kit/`.
+
+### Requirements
+
+**Debian/Ubuntu:**
+
+```bash
+sudo apt update && sudo apt install rsync openssh-client zstd pv
+```
+
+**Fedora:**
+
+```bash
+sudo dnf install rsync openssh-clients zstd pv
+```
 
 ## Config Layout
 
