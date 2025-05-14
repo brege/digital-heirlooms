@@ -143,8 +143,6 @@ Edit the timer file (e.g., `~/.config/systemd/user/backup-kit.timer` if installe
 
 ## Origins / Motivation
 
-## Motivations and Design Philosophy
-
 Backup Kit was born from several personal experiences. Early efforts to back up a laptop with limited disk space, often over slow home internet (where upload speeds can be particularly constrained), made just "backing up everything" infeasible. I did have access to other machines, however, where I could stage my backups to another machine with a larger disk.  This naturally led to the need for flexible targets (local or remote staging, remote destinations) to manage data across a growing mesh of personal devices--laptops, home servers, a Raspberry Pi music box.
 
 At another moment, I tried to backup to my laptop to my android phone over the (old) Syncthing app, which introduced a second challenge: it choked on large file counts.  This has since been resolved in a new app, but the constraint forced me to be mindful of 100K+ small files common spread across various package management systems and repositories (e.g., `.git` metadata, `node_modules`). 
