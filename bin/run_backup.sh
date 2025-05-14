@@ -236,7 +236,7 @@ flush_backup() {
     echo "Path: $local_stage_path/ -> $remote_dest_path/"
    
     # Execute rsync
-    local rsync_push_cmd=(rsync -az --delete) 
+    local rsync_push_cmd=(rsync -az --delete --info=progress2) 
     # Optional: Apply excludes to the push as well, if desired
     # if [[ -n "$default_exclude" && -f "$default_exclude" ]]; then 
     #   rsync_push_cmd+=(--exclude-from="$default_exclude")
