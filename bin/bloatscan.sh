@@ -13,7 +13,8 @@ SCAN_DEPTH=4
 DISPLAY_LIMIT=30
 USE_EXCLUDES=1
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)" 
-VERBOSE_MODE=false # For verbose output
+VERBOSE_MODE=false
+CALCULATE_COUNTS=true # New flag for controlling file/subdir counts
 
 EXCLUDES_FILE=""
 
@@ -49,6 +50,7 @@ print_usage() {
   echo "                         This overrides all default exclude file lookup mechanisms."
   echo "                         (Default lookup order if no flags: '$ultimate_default_exclude_file',"
   echo "                          then via --config-dir if provided)."
+  echo "  --no-counts            Skip counting files and subdirectories for each found directory (faster)."
   echo "  --verbose, -v          Enable detailed informational output during script execution."
   echo "  --help, -h             Show this help message."
 }
@@ -89,6 +91,10 @@ while [[ $# -gt 0 ]]; do
     --excludes-file=*)
       excludes_file_arg="${1#*=}" 
       USE_EXCLUDES=1 
+      shift
+      ;;
+    --no-counts) # New option
+      CALCULATE_COUNTS=false
       shift
       ;;
     --verbose|-v) 
@@ -183,28 +189,15 @@ fi
 echo "Bloatscan: Scanning directory: '$TARGET_PATH'"
 echo "Bloatscan: Maximum scan depth: $SCAN_DEPTH"
 echo "Bloatscan: Displaying top $DISPLAY_LIMIT entries by size."
+if [[ "$CALCULATE_COUNTS" == false ]]; then
+    echo "Bloatscan: File and subdirectory counts are disabled for speed."
+fi
 
 # --- Report Exclude File Status ---
+EXCLUDE_PATTERNS=() 
 if [[ "$USE_EXCLUDES" -eq 1 && -n "$EXCLUDES_FILE" && -f "$EXCLUDES_FILE" ]]; then
   echo "Bloatscan: Using excludes from: '$EXCLUDES_FILE'"
-elif [[ "$USE_EXCLUDES" -eq 1 ]]; then 
-  echo "Bloatscan: Exclude file was not found or not specified. Scanning without specific excludes."
-  USE_EXCLUDES=0 
-else 
-  echo "Bloatscan: Scanning without any user-defined excludes."
-fi
-echo # Blank line for readability
-
-# --- Setup Temporary File and Cleanup Trap ---
-TMP_FILE=$(mktemp)
-trap 'rm -f "$TMP_FILE"' EXIT
-
-# --- Print Results Header ---
-printf "%-10s  %10s  %8s  %-20s  %s\n" "Size" "Files" "Dirs" "Top-Level" "Path"
-
-# --- Read and Compile Exclude Patterns (if applicable) ---
-EXCLUDE_PATTERNS=()
-if [[ "$USE_EXCLUDES" -eq 1 && -n "$EXCLUDES_FILE" && -f "$EXCLUDES_FILE" ]]; then
+  # --- Read and Compile Exclude Patterns (if applicable) ---
   while IFS= read -r line; do
     line="${line%%#*}"
     line="${line#"${line%%[![:space:]]*}"}" 
@@ -214,61 +207,82 @@ if [[ "$USE_EXCLUDES" -eq 1 && -n "$EXCLUDES_FILE" && -f "$EXCLUDES_FILE" ]]; th
     expanded_pattern="${expanded_pattern%/}"
     EXCLUDE_PATTERNS+=("$expanded_pattern")
   done < "$EXCLUDES_FILE"
+elif [[ "$USE_EXCLUDES" -eq 1 ]]; then 
+  echo "Bloatscan: Exclude file was not found or not specified. Scanning without specific excludes."
+  USE_EXCLUDES=0 
+else 
+  echo "Bloatscan: Scanning without any user-defined excludes."
 fi
+echo 
 
-# --- Perform Main Directory Scan and Data Collection ---
-find "$TARGET_PATH" -mindepth 1 -maxdepth "$SCAN_DEPTH" -type d \
-  \( -path "$TARGET_PATH/.git" -o -path "$TARGET_PATH/.svn" -o -path "$TARGET_PATH/.hg" -o -path "$TARGET_PATH/.bzr" \) -prune \
-  -o -print0 2>/dev/null |
-  while IFS= read -r -d $'\0' dir_path; do
-    skip_dir=0
-    for pattern_to_check in "${EXCLUDE_PATTERNS[@]}"; do
-      if [[ "$dir_path" == $pattern_to_check || "$dir_path"/ == $pattern_to_check/* ]]; then
-        skip_dir=1
-        if [[ "$VERBOSE_MODE" == true ]]; then
-          echo "INFO: Directory '$dir_path' skipped due to exclude pattern: '$pattern_to_check'"
-        fi
-        break
-      fi
+# --- Setup Temporary File and Cleanup Trap ---
+TMP_FILE=$(mktemp)
+trap 'rm -f "$TMP_FILE"' EXIT
+
+# --- Print Results Header ---
+printf "%-10s  %10s  %8s  %-20s  %s\n" "Size" "Files" "Dirs" "Top-Level" "Path"
+
+# --- Perform Main Directory Scan and Data Collection (Faster Method) ---
+declare -a du_exclude_opts=()
+if [[ "$USE_EXCLUDES" -eq 1 && ${#EXCLUDE_PATTERNS[@]} -gt 0 ]]; then
+    if [[ "$VERBOSE_MODE" == true ]]; then
+        echo "INFO: Compiling du exclude options from patterns."
+    fi
+    for pattern in "${EXCLUDE_PATTERNS[@]}"; do
+        du_exclude_opts+=(--exclude="$pattern")
     done
+fi
+du_exclude_opts+=(--exclude='.git' --exclude='.svn' --exclude='.hg' --exclude='.bzr')
 
-    if [[ "$skip_dir" -eq 1 ]]; then
-      continue
+while IFS=$'\t' read -r size_bytes dir_path_from_du; do
+    if [[ -z "$dir_path_from_du" || ! -d "$dir_path_from_du" ]]; then
+        if [[ "$VERBOSE_MODE" == true && -n "$dir_path_from_du" ]]; then
+             echo "INFO: Skipping non-directory or problematic entry from du output: '$dir_path_from_du'"
+        fi
+        continue
+    fi
+    
+    if [[ ! "$size_bytes" =~ ^[0-9]+$ ]]; then
+        if [[ "$VERBOSE_MODE" == true ]]; then
+            echo "WARN: Non-numeric size ('$size_bytes') reported for '$dir_path_from_du'. Skipping." >&2
+        fi
+        continue
     fi
 
-    size_bytes_str=""
-    size_bytes_str=$(du -s --bytes "$dir_path" 2>/dev/null | awk '{print $1}') 
-    if [[ ! "$size_bytes_str" =~ ^[0-9]+$ ]]; then
-        echo "WARN: Could not determine size for directory '$dir_path'. Assigning size 0." >&2
-        size_bytes=0
-    else
-        size_bytes=$size_bytes_str
+    file_count="-" # Placeholder if counts are disabled
+    subdir_count="-" # Placeholder if counts are disabled
+
+    if [[ "$CALCULATE_COUNTS" == true ]]; then
+        file_count_val=$(find "$dir_path_from_du" -maxdepth 1 -type f -printf '.' 2>/dev/null | wc -c)
+        rc_file_count=$?
+        file_count=$file_count_val # Assign numeric value
+
+        subdir_count_val=$(find "$dir_path_from_du" -mindepth 1 -maxdepth 1 -type d -printf '.' 2>/dev/null | wc -c)
+        rc_subdir_count=$?
+        subdir_count=$subdir_count_val # Assign numeric value
+
+        if [[ $rc_file_count -ne 0 || $rc_subdir_count -ne 0 ]]; then
+            echo "WARN: Could not accurately determine file/subdir counts for '$dir_path_from_du' due to find errors. Results for this entry may be incomplete." >&2
+        fi
     fi
 
     size_hr=$(numfmt --to=iec-i --suffix=B --padding=7 "$size_bytes")
-    
-    file_count=$(find "$dir_path" -maxdepth 1 -type f -printf '.' 2>/dev/null | wc -c)
-    rc_file_count=$?
-
-    subdir_count=$(find "$dir_path" -mindepth 1 -maxdepth 1 -type d -printf '.' 2>/dev/null | wc -c)
-    rc_subdir_count=$?
-
-    if [[ $rc_file_count -ne 0 || $rc_subdir_count -ne 0 ]]; then
-        echo "WARN: Could not accurately determine file/subdir counts for '$dir_path' due to find errors. Results for this entry may be incomplete." >&2
-    fi
-
-    rel_path="${dir_path#"$TARGET_PATH"}"
+    rel_path="${dir_path_from_du#"$TARGET_PATH"}" 
     rel_path="${rel_path#/}"
     top_level="${rel_path%%/*}"
     if [[ -z "$top_level" && -n "$rel_path" ]]; then
       top_level="$rel_path"
     fi
-    if [[ "$TARGET_PATH" == "$dir_path" ]]; then
+    actual_path_for_printf="$dir_path_from_du"
+    if [[ "$dir_path_from_du" == "$TARGET_PATH" || "$dir_path_from_du" == "." ]]; then
       top_level="."
+      actual_path_for_printf="$TARGET_PATH"
     fi
+    
+    # Adjust printf for potentially non-numeric counts
+    printf "%-10s  %10s  %8s  %-20s  %s\n" "$size_hr" "$file_count" "$subdir_count" "$top_level" "$actual_path_for_printf" >> "$TMP_FILE"
 
-    printf "%-10s  %10d  %8d  %-20s  %s\n" "$size_hr" "$file_count" "$subdir_count" "$top_level" "$dir_path" >> "$TMP_FILE"
-  done
+done < <(du --bytes --max-depth="$SCAN_DEPTH" "${du_exclude_opts[@]}" "$TARGET_PATH" 2>/dev/null)
 
 # --- Sort and Display Final Results ---
 if [[ -s "$TMP_FILE" ]]; then 
