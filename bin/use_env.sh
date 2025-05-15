@@ -7,7 +7,7 @@ PROJECT_NAME="digital-heirlooms"
 
 # --- Default User Configuration & Paths ---
 USER_CONFIG_DEFAULT="$HOME/.config/$PROJECT_NAME"
-ENV_FILES_SUBDIR="env" # Standard subdirectory for environment files
+ENV_FILES_SUBDIR="env" 
 
 EFFECTIVE_CONFIG_DIR=""
 
@@ -19,7 +19,8 @@ print_usage() {
   echo "Usage: $0 [OPTIONS] <env_file_name_or_path>"
   echo ""
   echo "Sets the active backup environment for '$PROJECT_NAME' by creating a symlink"
-  echo "named 'backup.env' in the relevant configuration directory."
+  echo "named 'backup.env' in the user's effective configuration directory."
+  echo "Optionally updates a convenience symlink in the repository's config directory."
   echo ""
   echo "Arguments:"
   echo "  <env_file_name_or_path>  The name of the environment file (e.g., my_profile.env)"
@@ -107,20 +108,17 @@ fi
 echo "INFO: Using effective user configuration directory: $EFFECTIVE_CONFIG_DIR"
 
 
-# --- Determine Full Path to the Source Environment File (Theme 4 - UE3) ---
+# --- Determine Full Path to the Source Environment File ---
 ENV_PATH=""
 if [[ "$ENV_ARG_CAPTURED" = /* ]]; then
-  # Absolute path provided
   ENV_PATH="$ENV_ARG_CAPTURED"
 elif [[ "$ENV_ARG_CAPTURED" == */* ]]; then
-  # Relative path (contains a slash) - resolve it relative to CWD
   if ! env_path_realpath_tmp="$(realpath "$ENV_ARG_CAPTURED" 2>/dev/null)"; then
     echo "ERROR: Invalid relative path for environment file: $ENV_ARG_CAPTURED" >&2
     exit 1
   fi
   ENV_PATH="$env_path_realpath_tmp"
 else
-  # Just a filename — assume it lives in <EFFECTIVE_CONFIG_DIR>/<ENV_FILES_SUBDIR>/
   PROPOSED_PATH="$EFFECTIVE_CONFIG_DIR/$ENV_FILES_SUBDIR/$ENV_ARG_CAPTURED"
   if ! env_path_realpath_tmp="$(realpath "$PROPOSED_PATH" 2>/dev/null)"; then
      echo "ERROR: Could not resolve path for environment file '$ENV_ARG_CAPTURED' expected at '$PROPOSED_PATH'" >&2
@@ -129,8 +127,7 @@ else
   ENV_PATH="$env_path_realpath_tmp"
 fi
 
-# --- Define Target Symlink Location (Theme 4 - UE3) ---
-# This is the 'backup.env' in the root of the *user's effective configuration directory*
+# --- Define Target Symlink Location ---
 TARGET_LINK="$EFFECTIVE_CONFIG_DIR/backup.env"
 
 # --- Validate Source Environment File ---
@@ -139,14 +136,44 @@ if [[ ! -f "$ENV_PATH" ]]; then
   exit 1
 fi
 
-# --- Create/Update Symlink ---
-echo "Attempting to link: $TARGET_LINK -> $ENV_PATH"
+# --- Create/Update User's Main Symlink ---
+echo "Attempting to link user's active environment: $TARGET_LINK -> $ENV_PATH"
 if ln -sf "$ENV_PATH" "$TARGET_LINK"; then
   echo "Successfully linked '$TARGET_LINK' to '$ENV_PATH'."
 else
-  # This error case was not explicitly in original, but good practice from target
-  echo "ERROR: Failed to create symlink. Check permissions or paths." >&2
+  echo "ERROR: Failed to create symlink at '$TARGET_LINK'. Check permissions or paths." >&2
   exit 1
 fi
 
-# Repository convenience symlink logic will be added in Theme 5 (Step UE4)
+# --- Optionally Update Repository Convenience Symlink (Theme 5 - UE4) ---
+# This assumes use_env.sh is in a 'bin' subdirectory of the repo root.
+# Adjust REPO_ROOT_PATH if script location relative to repo root changes.
+if [[ -d "$(dirname "${BASH_SOURCE[0]}")/../config" ]]; then
+    REPO_ROOT_PATH="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+    REPO_CFG_SYMLINK="$REPO_ROOT_PATH/config/backup.env"
+
+    # Resolve real paths for comparison to avoid issues with symlinks in paths
+    # EFFECTIVE_CONFIG_DIR is already a realpath.
+    repo_config_dir_realpath="$(realpath "$REPO_ROOT_PATH/config" 2>/dev/null || echo "")"
+
+    if [[ -n "$repo_config_dir_realpath" && "$EFFECTIVE_CONFIG_DIR" != "$repo_config_dir_realpath" ]]; then
+        echo "INFO: Attempting to update repository convenience symlink: $REPO_CFG_SYMLINK -> $TARGET_LINK"
+        if ln -sf "$TARGET_LINK" "$REPO_CFG_SYMLINK"; then
+            echo "INFO: Repository convenience symlink updated."
+        else
+            echo "WARN: Could not update repository convenience symlink at $REPO_CFG_SYMLINK. This is usually okay." >&2
+        fi
+    elif [[ "$EFFECTIVE_CONFIG_DIR" == "$repo_config_dir_realpath" ]]; then
+        echo "INFO: User's effective config directory is the repository's config directory."
+        echo "      Skipping repository convenience symlink update to avoid self-reference."
+    else
+        # This case might occur if realpath for repo_config_dir_realpath failed but the -d check passed.
+        echo "WARN: Could not reliably compare effective config directory with repository config directory." >&2
+        echo "      Skipping repository convenience symlink update." >&2
+    fi
+else
+    echo "INFO: Repository 'config' directory not found relative to script. Skipping convenience symlink update."
+fi
+
+echo # Blank line for readability before final message
+echo "Active environment for '$PROJECT_NAME' is now set via '$TARGET_LINK' (which points to '$ENV_PATH')."
