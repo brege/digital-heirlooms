@@ -1,10 +1,10 @@
 [Unit]
-Description=Backup-Kit Service for User
+Description=Digital-Heirlooms Service for User
 After=network.target
 
 [Service]
 Type=simple
-ExecStart=/bin/bash /path/to/backupkit/bin/run_backup.sh
+ExecStart=/bin/bash /path/to/digital-heirlooms/bin/run_backup.sh
 User=user
 Group=user
 WorkingDirectory=/home/user

@@ -1,9 +1,9 @@
-# ~/.config/backup-kit/excludes/__user__@__hostname__
+# ~/.config/digital-heirlooms/excludes/__user__@__hostname__
 
-# Inherits global excludes from default.exclude (already applied by backup-kit)
+# Inherits global excludes from default.exclude (already applied by digital-heirlooms)
 
 # Example: User-specific exclusions for testing
-# ~/.config/backup-kit/excludes/__user__@__hostname__
+# ~/.config/digital-heirlooms/excludes/__user__@__hostname__
 # Add machine-specific NOPASS Files and directories to exclude for __user__@__hostname__.
 # Examples:
 # /home/__user__/.cache/

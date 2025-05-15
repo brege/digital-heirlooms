@@ -1,4 +1,4 @@
-# ~/.config/backup-kit/excludes/default.excludes
+# ~/.config/digital-heirlooms/excludes/default.excludes
 # 🌐 Global excludes — applied to all backups
 
 # Ignore Unix socket and IPC files

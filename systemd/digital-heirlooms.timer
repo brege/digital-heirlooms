@@ -1,5 +1,5 @@
 [Unit]
-Description=Run Backup Timer
+Description=Run digital-heirloom backup Timer
 
 [Timer]
 # Run backup once daily (24 hours)

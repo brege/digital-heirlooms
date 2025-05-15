@@ -1,10 +1,10 @@
-# Backup Kit: Archiving and Whittling Digital Heirlooms
+# Digital Heirlooms - A script-based archival and data whittling toolkit
 
 This toolkit simplifies backing up directories from local or remote machines, using modular config files, excludes, and hooks. It supports incremental syncs, customizable archiving, and optional automation via `systemd`.
 
 ## Preface
 
-**The primary audience for Backup-Kit is people who:**
+**The primary audience for Digital Heirlooms is people who:**
 
 * are proficient with the `*nix` command line and prefer transparent, script-based tools.
 * want modular, plain-text configuration to selectively back up their hard-time (heirloom) data and extend functionality with custom shell hooks.
@@ -41,12 +41,12 @@ Many will find this tool a bit too specialized, but others might find this syste
 Clone the repo and run the setup script:
 
 ```bash
-git clone https://github.com/brege/backup-kit
-cd ~/backup-kit
+git clone https://github.com/brege/digital-heirlooms
+cd ~/digital-heirlooms
 ./setup
 ```
 
-This initializes your user config at `~/.config/backup-kit/`.
+This initializes your user config at `~/.config/digital-heirlooms/`.
 
 ### Requirements
 
@@ -64,13 +64,13 @@ sudo dnf install rsync openssh-clients zstd pv
 
 ## Config Layout - Multiple Machines
 
-The `setup` script initializes a configuration directory, typically at `~/.config/backup-kit/`. Over time, as you configure backups for multiple machines and enable hooks, it might resemble the following structure. This example shows a setup managing backups for a laptop, a desktop, a file server, and a Raspberry Pi, with a Pi-hole configuration also available.
+The `setup` script initializes a configuration directory, typically at `~/.config/digital-heirlooms/`. Over time, as you configure backups for multiple machines and enable hooks, it might resemble the following structure. This example shows a setup managing backups for a laptop, a desktop, a file server, and a Raspberry Pi, with a Pi-hole configuration also available.
 
 Assume the user's home directory is `/home/user/` for the absolute paths shown in the symlinks.
 
 ```bash
-/home/user/.config/backup-kit/
-├── backup.env -> /home/user/.config/backup-kit/env/alice@laptop_main.env  
+/home/user/.config/digital-heirlooms/
+├── backup.env -> /home/user/.config/digital-heirlooms/env/alice@laptop_main.env  
 │                                   # (Symlink to the active environment)
 ├── env/
 │   ├── alice@laptop_main.env       # <-- You only link directly to one environment,
@@ -90,7 +90,7 @@ Assume the user's home directory is `/home/user/` for the absolute paths shown i
 │   └── 90_archive.sh
 ├── hooks-enabled/
 │   │                               # Toggle hooks here to [enable]/disable them 
-│   └── 90_archive.sh -> /home/user/.config/backup-kit/hooks-available/90_archive.sh 
+│   └── 90_archive.sh -> /home/user/.config/digital-heirlooms/hooks-available/90_archive.sh 
 │ 
 ├── machines-available/             # Customize which directories of each machine you
 │   ├── alice@laptop                # want to back up
@@ -100,16 +100,16 @@ Assume the user's home directory is `/home/user/` for the absolute paths shown i
 │   └── pihole
 └── machines-enabled/               # Toggle machines here to enable/disable their backups
     │                               # via the machine you are currently executing from 
-    ├── alice@laptop  -> /home/user/.config/backup-kit/machines-available/alice@laptop
-    ├── fileserver    -> /home/user/.config/backup-kit/machines-available/fileserver
-    └── raspberrypi   -> /home/user/.config/backup-kit/machines-available/raspberrypi
+    ├── alice@laptop  -> /home/user/.config/digital-heirlooms/machines-available/alice@laptop
+    ├── fileserver    -> /home/user/.config/digital-heirlooms/machines-available/fileserver
+    └── raspberrypi   -> /home/user/.config/digital-heirlooms/machines-available/raspberrypi
 ```
 
 The directory layout is as follows (this is a working example of ["Machine and Exclude Files"](#machine-and-exclude-files))
 
 * **`backup.env` (in repo `config/`)**: 
   * A symlink (created by `./setup`) to the active default environment file within your user configuration (e.g., 
-    `~/.config/backup-kit/env/alice@laptop_main.env`). This is the environment `./bin/run_backup.sh` uses if called without the `--config` flag.
+    `~/.config/digital-heirlooms/env/alice@laptop_main.env`). This is the environment `./bin/run_backup.sh` uses if called without the `--config` flag.
 
 * **`env/`**: 
   * Holds various environment configurations (e.g., `alice@laptop_main.env`, `bob@desktop_local.env`). Each defines variables like `LOCAL_TARGET_BASE`, `REMOTE_TARGET_BASE`, and `DRY_RUN` for different backup scenarios or machines. While you can have many, only one is linked as the active default at a time.
@@ -125,12 +125,12 @@ The directory layout is as follows (this is a working example of ["Machine and E
     `./bin/machine_state.sh enable alice@laptop`
 
 This structure allows for a modular and organized approach to managing multiple backup sources and configurations. For entirely separate backup *profiles*, see
-[/tree/feature/multi-profile](https://github.com/brege/backup-kit/tree/feature/multi-profile)
+[/tree/feature/multi-profile](https://github.com/brege/digital-heirlooms/tree/feature/multi-profile)
 for a more advanced solution.
 
 ## Setup and Test Mode
 
-Running `./setup` populates the config directory with templates and symlinks `config/backup.env` to the machine-specific env file (e.g. `user@hostname_.env`) in `~/.config/backup-kit/env/`. It also copies the repo's `hooks/` directory to your config's `hooks-available/`.
+Running `./setup` populates the config directory with templates and symlinks `config/backup.env` to the machine-specific env file (e.g. `user@hostname_.env`) in `~/.config/digital-heirlooms/env/`. It also copies the repo's `hooks/` directory to your config's `hooks-available/`.
 
 For test mode, use:
 
@@ -142,10 +142,10 @@ This links a test configuration and runs a local backup from `test/source/` to `
 
 ## Environment File
 
-The active environment file is symlinked to `config/backup.env` within the Backup-Kit directory, typically pointing to a file like:
+The active environment file is symlinked to `config/backup.env` within the Digital Heirloom directory, typically pointing to a file like:
 
 ```bash
-~/.config/backup-kit/env/<user@host>_.env
+~/.config/digital-heirlooms/env/<user@host>_.env
 ```
 
 It defines local/remote base paths for backups 
@@ -172,22 +172,22 @@ could be
 
 `user@remoteserver:/backup/archives`.
 
-To support multiple push targets or distinct configurations, you can use separate main configuration directories (e.g., `~/.config/backup-kit-main`, `~/.config/backup-kit-alternate`) and run backups against each using the `--config` flag:
+To support multiple push targets or distinct configurations, you can use separate main configuration directories (e.g., `~/.config/digital-heirlooms-main`, `~/.config/digital-heirlooms-alternate`) and run backups against each using the `--config` flag:
 
 ```bash
-./bin/run_backup.sh --config ~/.config/backup-kit-alternate
+./bin/run_backup.sh --config ~/.config/digital-heirlooms-alternate
 ```
 
 Alternatively, use the `./bin/use_env.sh` script to change the `config/backup.env` symlink to point to different environment files within your active configuration directory.
 
-There is a branch available at [/tree/feature/multi-profile](https://github.com/brege/backup-kit/tree/feature/multi-profile) for better multi-profile support (**Work-in-progress**)
+There is a branch available at [/tree/feature/multi-profile](https://github.com/brege/digital-heirlooms/tree/feature/multi-profile) for better multi-profile support (**Work-in-progress**)
 
 ## Machine and Exclude Files
 
 Each source machine has its own config file in `machines-available/`, e.g.:
 
 ```ini
-# ~/.config/backup-kit/machines-available/user@hostname
+# ~/.config/digital-heirlooms/machines-available/user@hostname
 [user@hostname]
 exclude-from=config/excludes/user@hostname
 src=/var/lib/plexmediaserver
@@ -231,17 +231,17 @@ The setup script can install a `systemd` user service and timer. To enable it:
 
 ```bash
 systemctl --user daemon-reexec # Run if you modified or added user service files
-systemctl --user enable backup-kit.timer
-systemctl --user start backup-kit.timer
+systemctl --user enable digital-heirlooms.timer
+systemctl --user start digital-heirlooms.timer
 ```
 
 To check the timer:
 
 ```bash
-systemctl --user list-timers backup-kit.timer
+systemctl --user list-timers digital-heirlooms.timer
 ```
 
-Edit the timer file (e.g., `~/.config/systemd/user/backup-kit.timer` if installed via setup, or the one in the repo's `systemd/` directory before setup) to customize frequency (default: daily).
+Edit the timer file (e.g., `~/.config/systemd/user/digital-heirlooms.timer` if installed via setup, or the one in the repo's `systemd/` directory before setup) to customize frequency (default: daily).
 
 
 ## Origins / Motivation
@@ -273,7 +273,7 @@ In essence, Backup Kit is a pragmatic, script-based toolkit that's transparent, 
 
 `bin/run_backup.sh` handles the core logic:
 
-  - Sources the active `backup.env` file (symlinked at `config/backup.env`, typically pointing to a file within `~/.config/backup-kit/env/`) to load its configuration variables.
+  - Sources the active `backup.env` file (symlinked at `config/backup.env`, typically pointing to a file within `~/.config/digital-heirlooms/env/`) to load its configuration variables.
   - Reads enabled machine configurations from the `machines-enabled/` directory.
   - For each machine:
       1. Rsyncs each listed `src` path while respecting global (`excludes/default.exclude`) and machine-specific exclude files (e.g., `excludes/user@hostname`).
@@ -314,7 +314,7 @@ cat bin/bloatscan.sh | ssh user@host 'bash -s -- /remote/path/to/scan --depth=2 
 The remote execution also supports flags like `--depth` and `--limit` after the path.
 
 **Run iteratively:**
-Look for folders with massive file counts or disk usage. Consider whether those are really worth preserving--often they come from package managers like `npm`, `pip`, `docker` etc, and can be reinstalled later. The tool can also use an exclude file similar to the backup excludes (by default `~/.config/backup-kit/excludes/user@host` or specify with `--excludes-file=path/to/file`).
+Look for folders with massive file counts or disk usage. Consider whether those are really worth preserving--often they come from package managers like `npm`, `pip`, `docker` etc, and can be reinstalled later. The tool can also use an exclude file similar to the backup excludes (by default `~/.config/digital-heirlooms/excludes/user@host` or specify with `--excludes-file=path/to/file`).
 
 ## Notes
 
