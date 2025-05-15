@@ -7,14 +7,13 @@ PROJECT_NAME="digital-heirlooms"
 
 # --- Default User Configuration & Paths ---
 USER_CONFIG_DEFAULT="$HOME/.config/$PROJECT_NAME"
-ENV_FILES_SUBDIR="env" # Standard subdirectory for environment files
+ENV_FILES_SUBDIR="env"
 
-# This variable will hold the determined configuration directory
-EFFECTIVE_CONFIG_DIR="" # Will be set after argument parsing
+EFFECTIVE_CONFIG_DIR=""
 
 # --- Argument Storage ---
 ENV_ARG_CAPTURED=""
-CONFIG_DIR_ARG="" # Stores value from --config-dir
+CONFIG_DIR_ARG=""
 
 print_usage() {
   echo "Usage: $0 [OPTIONS] <env_file_name_or_path>"
@@ -78,7 +77,6 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-# Validate that the environment argument was provided
 if [[ -z "$ENV_ARG_CAPTURED" ]]; then
   echo "ERROR: No environment file specified." >&2
   print_usage
@@ -91,22 +89,36 @@ if [[ -n "$CONFIG_DIR_ARG" ]]; then
 else
   EFFECTIVE_CONFIG_DIR="$USER_CONFIG_DEFAULT"
 fi
-# Note: Validation of this path (realpath, dir check) occurs in Theme 3 (Step UE2).
-# Usage of this path for ENV_PATH and TARGET_LINK occurs in Theme 4 (Step UE3).
 
-# The following logic for ENV_PATH and TARGET_LINK remains unchanged from Theme 1.
-# It does NOT yet use EFFECTIVE_CONFIG_DIR. This is intentional for this theme.
+# --- Validate and Resolve EFFECTIVE_CONFIG_DIR (Theme 3 Core) ---
+# Store the original path for error messages before realpath potentially changes it or fails
+cfg_dir_original_value="$EFFECTIVE_CONFIG_DIR"
+if ! config_dir_realpath_tmp="$(realpath "$EFFECTIVE_CONFIG_DIR" 2>/dev/null)"; then
+    echo "ERROR: Invalid path specified for configuration directory: $cfg_dir_original_value" >&2
+    echo "       Please ensure the path is correct and accessible." >&2
+    exit 1
+fi
+EFFECTIVE_CONFIG_DIR="$config_dir_realpath_tmp"
+
+if [[ ! -d "$EFFECTIVE_CONFIG_DIR" ]]; then
+    echo "ERROR: Effective configuration directory does not exist or is not a directory: $EFFECTIVE_CONFIG_DIR" >&2
+    echo "       Please create it or use the --config-dir option to specify the correct path." >&2
+    exit 1
+fi
+# At this point, EFFECTIVE_CONFIG_DIR is a validated, existing, absolute directory path.
+echo "INFO: Using effective user configuration directory: $EFFECTIVE_CONFIG_DIR"
+
+
+# The following logic for ENV_PATH and TARGET_LINK remains unchanged from Theme 1 & 2.
+# It does NOT yet use EFFECTIVE_CONFIG_DIR. This is for Theme 4 (Step UE3).
 
 # Determine full path
 ENV_PATH=""
 if [[ "$ENV_ARG_CAPTURED" = /* ]]; then
-  # Absolute path
   ENV_PATH="$ENV_ARG_CAPTURED"
 elif [[ "$ENV_ARG_CAPTURED" == */* ]]; then
-  # Relative path already includes directories
-  ENV_PATH="$(realpath "$ENV_ARG_CAPTURED")"
+  ENV_PATH="$(realpath "$ENV_ARG_CAPTURED")" # This realpath is for the ENV_ARG itself if relative
 else
-  # Just a filename — assume it lives in ../config/env relative to script dir (old logic)
   SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
   ENV_PATH="$(realpath "$SCRIPT_DIR/../config/env/$ENV_ARG_CAPTURED")"
 fi
@@ -121,5 +133,3 @@ fi
 
 ln -sf "$ENV_PATH" "$TARGET_LINK"
 echo "Linked $TARGET_LINK -> $ENV_PATH"
-# An echo statement confirming EFFECTIVE_CONFIG_DIR could be added here or after validation in Theme 3.
-# For now, keeping changes minimal to just setting the variable.

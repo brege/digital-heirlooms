@@ -4,21 +4,23 @@ set -euo pipefail
 # --- Project Configuration ---
 PROJECT_NAME="digital-heirlooms"
 
-# --- Default User Configuration (for print_usage & future use) ---
-USER_CONFIG_DEFAULT="$HOME/.config/$PROJECT_NAME"
+# --- Default User Configuration Path ---
+USER_HOME_CFG_ROOT="$HOME/.config/$PROJECT_NAME"
 
-# --- Defaults ---
-TARGET_PATH="${1:-$HOME}" # Will be properly set via potential_target_path after parsing
+# --- Script Defaults & Initial Values ---
+TARGET_PATH_ARG="" # To store positional path argument
 SCAN_DEPTH=4
 DISPLAY_LIMIT=30
 USE_EXCLUDES=1
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-# Default excludes file path, may be influenced by --config-dir in future themes
-EXCLUDES_FILE_DEFAULT="$REPO_ROOT/config/excludes/$(whoami)@$(hostname -s)"
-EXCLUDES_FILE="$EXCLUDES_FILE_DEFAULT" # Actual excludes file to use
+
+# EXCLUDES_FILE will be determined after argument parsing
+EXCLUDES_FILE=""
+# EXCLUDES_FILE_DEFAULT is no longer a single static path, but determined by hierarchy
 
 # --- Argument Storage ---
-config_dir_arg="" # Stores value from --config-dir
+config_dir_arg=""   # Stores value from --config-dir
+excludes_file_arg="" # Stores value from --excludes-file
 
 # Enable globstar and extglob for advanced matching
 shopt -s globstar extglob nullglob
@@ -34,19 +36,18 @@ print_usage() {
   echo ""
   echo "Options:"
   echo "  --config-dir <path>    Specify a root directory for project configurations."
-  echo "                         (May influence default for --excludes-file if not set directly)."
-  echo "                         (Standard user config default: $USER_CONFIG_DEFAULT)"
+  echo "                         If --excludes-file is not given, this path will be used to"
+  echo "                         look for '<config_dir>/excludes/\$(whoami)@\$(hostname -s)'."
+  echo "                         (Standard user config default for other scripts: $USER_HOME_CFG_ROOT)"
   echo "  --depth=<num>          Maximum depth to scan into subdirectories (Default: $SCAN_DEPTH)."
   echo "  --limit=<num>          Number of top entries to display (Default: $DISPLAY_LIMIT)."
   echo "  --no-excludes          Do not use any exclude patterns."
   echo "  --excludes-file=<path> Path to a file containing exclude patterns (one per line)."
-  echo "                         (Default: $EXCLUDES_FILE_DEFAULT)"
+  echo "                         Overrides default exclude file lookup."
   echo "  --help, -h             Show this help message."
 }
 
 # --- Argument Parsing ---
-potential_target_path=""
-
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --help|-h)
@@ -80,7 +81,7 @@ while [[ $# -gt 0 ]]; do
       shift
       ;;
     --excludes-file=*)
-      EXCLUDES_FILE="${1#*=}"
+      excludes_file_arg="${1#*=}" # Store arg, don't directly set EXCLUDES_FILE yet
       USE_EXCLUDES=1 
       shift
       ;;
@@ -90,8 +91,8 @@ while [[ $# -gt 0 ]]; do
       exit 1
       ;;
     *) 
-      if [[ -z "$potential_target_path" ]]; then
-        potential_target_path="$1"
+      if [[ -z "$TARGET_PATH_ARG" ]]; then # Changed from potential_target_path
+        TARGET_PATH_ARG="$1"
       else
         echo "WARN: Unexpected argument: $1. Ignoring." >&2
       fi
@@ -100,26 +101,82 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-if [[ -n "$potential_target_path" ]]; then
-  TARGET_PATH="$potential_target_path"
-elif [[ -z "${1:-}" && -z "$potential_target_path" ]]; then 
-  TARGET_PATH="$HOME" 
+# --- Finalize Target Path for Scanning ---
+TARGET_PATH="$HOME" # Default if no argument is provided
+if [[ -n "$TARGET_PATH_ARG" ]]; then
+  if ! target_realpath_tmp="$(realpath "$TARGET_PATH_ARG" 2>/dev/null)"; then
+    echo "ERROR: Invalid target path specified: '$TARGET_PATH_ARG' (realpath failed)." >&2
+    exit 1
+  fi
+  if [[ ! -d "$target_realpath_tmp" ]]; then
+    echo "ERROR: Target path '$target_realpath_tmp' is not a directory." >&2
+    exit 1
+  fi
+  TARGET_PATH="$target_realpath_tmp"
 fi
 
-# Note: config_dir_arg is parsed but not yet used to change EXCLUDES_FILE logic in Theme 2.
-# That change (Flexible Exclude File Configuration) is part of Theme 3 (BS.B).
+
+# --- Determine and Validate EXCLUDES_FILE Path (Theme 3 - BS.B) ---
+HOSTNAME_SHORT="$(hostname -s)"
+WHOAMI_USER="$(whoami)"
+DEFAULT_EXCLUDE_FILENAME="${WHOAMI_USER}@${HOSTNAME_SHORT}" # Used by multiple tiers
+
+if [[ "$USE_EXCLUDES" -eq 1 ]]; then
+  if [[ -n "$excludes_file_arg" ]]; then
+    # Priority 1: --excludes-file flag
+    echo "INFO: --excludes-file flag provided."
+    if ! excludes_file_realpath_tmp="$(realpath "$excludes_file_arg" 2>/dev/null)"; then
+        echo "WARN: Invalid path specified with --excludes-file: '$excludes_file_arg' (realpath failed). Scanning without excludes." >&2
+        USE_EXCLUDES=0 
+    else
+        EXCLUDES_FILE="$excludes_file_realpath_tmp"
+    fi
+  elif [[ -n "$config_dir_arg" ]]; then
+    # Priority 2: --config-dir flag
+    echo "INFO: --config-dir flag provided, deriving excludes path."
+    cfg_dir_realpath_tmp=""
+    if ! cfg_dir_realpath_tmp="$(realpath "$config_dir_arg" 2>/dev/null)"; then
+        echo "WARN: Invalid path specified with --config-dir: '$config_dir_arg' (realpath failed). Trying next default." >&2
+        # Fall through to user home default
+    elif [[ ! -d "$cfg_dir_realpath_tmp" ]]; then
+        echo "WARN: Path specified with --config-dir is not a directory: '$cfg_dir_realpath_tmp'. Trying next default." >&2
+        # Fall through to user home default
+    else
+        # Use config_dir_arg to construct excludes path
+        EXCLUDES_FILE="$cfg_dir_realpath_tmp/excludes/$DEFAULT_EXCLUDE_FILENAME"
+        # Attempt to create parent directory for convenience if we derived this path
+        mkdir -p "$(dirname "$EXCLUDES_FILE")" 2>/dev/null || true
+    fi
+  fi
+
+  # Priority 3: User-centric default (if EXCLUDES_FILE still not set)
+  if [[ "$USE_EXCLUDES" -eq 1 && -z "$EXCLUDES_FILE" ]]; then
+    echo "INFO: No --excludes-file or valid --config-dir for excludes. Using user default path."
+    EXCLUDES_FILE="$USER_HOME_CFG_ROOT/excludes/$DEFAULT_EXCLUDE_FILENAME"
+    # Attempt to create parent directory for convenience
+    mkdir -p "$(dirname "$EXCLUDES_FILE")" 2>/dev/null || true
+  fi
+
+  # If after all attempts EXCLUDES_FILE is set, check if it's a file.
+  # No error if not found, just a message, and USE_EXCLUDES might be turned off below.
+  if [[ -n "$EXCLUDES_FILE" && ! -f "$EXCLUDES_FILE" ]]; then
+    echo "INFO: Exclude file specified or derived does not exist: $EXCLUDES_FILE"
+  fi
+else
+  EXCLUDES_FILE="" # Ensure it's empty if not using excludes
+fi
+
 
 # --- Script Execution ---
 echo "Bloatscan: Scanning directory: $TARGET_PATH"
 echo "Bloatscan: Maximum scan depth: $SCAN_DEPTH"
 echo "Bloatscan: Displaying top $DISPLAY_LIMIT entries by size."
 
-if [[ "$USE_EXCLUDES" -eq 1 ]]; then
-  if [[ -f "$EXCLUDES_FILE" ]]; then
-    echo "Bloatscan: Using excludes from: $EXCLUDES_FILE"
-  else
-    echo "Bloatscan: Exclude file not found (or not specified): $EXCLUDES_FILE. Scanning without specific excludes."
-  fi
+if [[ "$USE_EXCLUDES" -eq 1 && -n "$EXCLUDES_FILE" && -f "$EXCLUDES_FILE" ]]; then
+  echo "Bloatscan: Using excludes from: $EXCLUDES_FILE"
+elif [[ "$USE_EXCLUDES" -eq 1 ]]; then # USE_EXCLUDES is true, but file wasn't found or EXCLUDES_FILE is empty
+  echo "Bloatscan: Exclude file not found or not specified. Scanning without specific excludes."
+  USE_EXCLUDES=0 # Force off if file is unusable
 else
   echo "Bloatscan: Scanning without user-defined excludes."
 fi
@@ -131,7 +188,7 @@ trap 'rm -f "$TMP_FILE"' EXIT
 printf "%-10s  %10s  %8s  %-20s  %s\n" "Size" "Files" "Dirs" "Top-Level" "Path"
 
 EXCLUDE_PATTERNS=()
-if [[ "$USE_EXCLUDES" -eq 1 && -f "$EXCLUDES_FILE" ]]; then
+if [[ "$USE_EXCLUDES" -eq 1 && -n "$EXCLUDES_FILE" && -f "$EXCLUDES_FILE" ]]; then
   while IFS= read -r line; do
     line="${line%%#*}"
     line="${line#"${line%%[![:space:]]*}"}" 
