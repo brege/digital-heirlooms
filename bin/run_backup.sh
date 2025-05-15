@@ -178,11 +178,11 @@ fi
 
 # --- Define Core Operational Directories ---
 MACHINES_ENABLED_DIR="$CONFIG_ROOT/machines-enabled"
-EXCLUDES_DIR="$CONFIG_ROOT/excludes"
+EXCLUDES_DIR="$CONFIG_ROOT/excludes" 
 HOOKS_DIR="$CONFIG_ROOT/hooks-enabled"
 
 echo "Using machine configs from: $MACHINES_ENABLED_DIR"
-echo "Using excludes from: $EXCLUDES_DIR"
+echo "Using excludes from directory (for global excludes): $EXCLUDES_DIR"
 echo "Using hooks from: $HOOKS_DIR"
 
 # --- Setup Global Rsync Exclude File ---
@@ -198,26 +198,24 @@ fi
 # --- Initialize Core Backup Variables and State ---
 REMOTE_TARGET_BASE="${REMOTE_TARGET_BASE:-}"
 DRY_RUN="${DRY_RUN:-false}"
-# Not currently used, but present in original
 direct_remote_rsync=false
 staged_dirs=()
 
 current_user=""
 current_host=""
-current_exclude=""
+current_exclude="" # Will be set from machine config file
 backup_paths=()
 declare -A target_machine_roots
 
 # --- Helper Function to Check for Localhost ---
 is_local_host() {
-  # Check if the given host is the local machine
+  # Check if the given host is the local machine  
   [[ "$1" == "localhost" || "$1" == "$(hostname)" || "$1" == "$(hostname -f)" ]]
 }
 
 # --- Backup Processing Function ---
 flush_backup() {
   [[ ${#backup_paths[@]} -eq 0 ]] && return
-
   local staged_locally_this_flush=false
 
   # --- Iterate Over Source Paths for Current Machine ---
@@ -225,13 +223,16 @@ flush_backup() {
     # Initialize with base options
     local rsync_cmd=(rsync -avzR --delete)
 
-    # Add global exclude file
+    # Apply default/global exclude file if it exists
     if [[ -n "$default_exclude" && -f "$default_exclude" ]]; then
         rsync_cmd+=(--exclude-from="$default_exclude")
     fi
-    # Add machine-specific exclude file
+    # Apply machine-specific exclude file if current_exclude is set and valid
     if [[ -n "$current_exclude" && -f "$current_exclude" ]]; then
+        echo "INFO: Applying machine-specific excludes for $current_user@$current_host from: $current_exclude"
         rsync_cmd+=(--exclude-from="$current_exclude")
+    elif [[ -n "$current_exclude" ]]; then 
+        echo "WARN: Machine-specific exclude file specified ('$current_exclude') but not found for $current_user@$current_host. Proceeding without it." >&2
     fi
 
     # Scenario 1: Local staging then remote push
@@ -239,7 +240,6 @@ flush_backup() {
       dest_dir="${LOCAL_TARGET_BASE%/}/$current_user@$current_host"
       target_machine_roots["$current_user@$current_host"]="$dest_dir"
       src_path_expanded=""
-      # Assume SSH by default for this scenario if host isn't local
       use_ssh=true
       if is_local_host "$current_host"; then
         use_ssh=false
@@ -288,7 +288,6 @@ flush_backup() {
       dest_dir="${LOCAL_TARGET_BASE%/}/$current_user@$current_host"
       target_machine_roots["$current_user@$current_host"]="$dest_dir"
       src_path_expanded=""
-      # Assume SSH if host isn't local
       use_ssh=true
       if is_local_host "$current_host"; then
         use_ssh=false
@@ -331,7 +330,7 @@ flush_backup() {
   fi
 
   backup_paths=()
-  current_exclude=""
+  current_exclude="" 
 }
 
 # --- Main Processing Loop for Machines ---
@@ -339,9 +338,8 @@ machine_processed_count=0
 config_file_found_in_enabled_dir=false
 for config_file in "$MACHINES_ENABLED_DIR"/*; do
   if [[ ! -f "$config_file" ]]; then
-    # This handles the case where MACHINES_ENABLED_DIR is empty
     if [[ "$config_file" == "$MACHINES_ENABLED_DIR/*" ]]; then
-        :
+        : 
     else
         echo "WARN: Skipping non-file in MACHINES_ENABLED_DIR: $config_file" >&2
     fi
@@ -352,35 +350,67 @@ for config_file in "$MACHINES_ENABLED_DIR"/*; do
   current_user=""
   current_host=""
   backup_paths=()
+  current_exclude="" # Initialize for each machine config file
 
   # --- Parse Individual Machine Configuration File ---
   while IFS= read -r line || [[ -n "$line" ]]; do
-    line="${line%%#*}" # Remove comments
-    line="${line#"${line%%[![:space:]]*}"}" # Trim leading whitespace
-    line="${line%"${line##*[![:space:]]}"}"  # Trim trailing whitespace
+    line="${line%%#*}" 
+    line="${line#"${line%%[![:space:]]*}"}" 
+    line="${line%"${line##*[![:space:]]}"}"  
     [[ -z "$line" ]] && continue
 
     # Identify machine section [user@host]
     if [[ "$line" =~ ^\[(.+)@(.+)\]$ ]]; then
-      if [[ -n "$current_user" && -n "$current_host" ]]; then # Flush previous machine's paths
+      if [[ -n "$current_user" && -n "$current_host" ]]; then 
         flush_backup || echo "WARN: A problem occurred in flush_backup for $current_user@$current_host (file: $config_file), continuing." >&2
+        # Reset for next machine section in same file (if any)
         backup_paths=()
+        current_exclude="" 
       fi
       current_user="${BASH_REMATCH[1]}"
       current_host="${BASH_REMATCH[2]}"
-      current_exclude="$EXCLUDES_DIR/$current_user@$current_host"
       echo ""
       echo "Processing machine: $current_user@$current_host from $config_file"
       machine_processed_count=$((machine_processed_count + 1))
       continue
     fi
 
-    # Identify source paths
     if [[ "$line" == src=* && -n "$current_user" && -n "$current_host" ]]; then
       raw_path="${line#src=}"
-      # eval is a potential security risk if $raw_path is not trusted
       expanded_path=$(eval echo "$raw_path")
       backup_paths+=("$expanded_path")
+    fi
+    
+    # Theme 4: Parse 'exclude-from=' line from machine config
+    if [[ "$line" == exclude-from=* && -n "$current_user" && -n "$current_host" ]]; then
+      exclude_path_from_file="${line#exclude-from=}"
+      resolved_exclude_path=""
+      # Resolve path: if not absolute, assume relative to CONFIG_ROOT
+      # Paths generated by setup.sh should be effectively absolute already.
+      if [[ "$exclude_path_from_file" != /* && -n "$CONFIG_ROOT" ]]; then
+        # Check if CONFIG_ROOT is already a prefix (e.g. setup.sh wrote $EFFECTIVE_USER_CFG_ROOT/...)
+        if [[ "$exclude_path_from_file" == "$CONFIG_ROOT"* ]]; then
+            resolved_exclude_path="$exclude_path_from_file"
+        else
+            resolved_exclude_path="$CONFIG_ROOT/$exclude_path_from_file"
+        fi
+      else
+        resolved_exclude_path="$exclude_path_from_file" # Is absolute or no CONFIG_ROOT (unlikely here)
+      fi
+      
+      # Validate the resolved exclude path
+      if [[ -n "$resolved_exclude_path" ]]; then
+        exclude_realpath_tmp=""
+        if ! exclude_realpath_tmp="$(realpath "$resolved_exclude_path" 2>/dev/null)"; then
+          echo "WARN: Invalid path in 'exclude-from' for $current_user@$current_host: '$resolved_exclude_path' (realpath failed). No machine-specific exclude will be used." >&2
+          current_exclude="" 
+        else
+          current_exclude="$exclude_realpath_tmp"
+          # Further check if file exists happens in flush_backup
+        fi
+      else
+          current_exclude="" # Ensure it's empty if parsing failed or line was 'exclude-from='
+      fi
     fi
   done < "$config_file"
 
@@ -399,21 +429,21 @@ fi
 
 # Check if any backups were actually processed to target directories
 if [[ ${#target_machine_roots[@]} -eq 0 ]]; then
-    if [[ "$machine_processed_count" -gt 0 ]]; then # Machines were defined but no targets created
+    if [[ "$machine_processed_count" -gt 0 ]]; then 
         echo "Machines were processed, but no valid backup target directories were recorded. Skipping hooks."
-    else # No machines were even defined or processed
+    else 
         echo "No machines processed. Skipping hooks."
     fi
 elif [[ -d "$HOOKS_DIR" ]]; then
   # --- Prepare and Uniquify Target Paths for Hooks ---
   declare -a hook_target_dirs_final=()
   for path_val in "${target_machine_roots[@]}"; do
-    if [[ -d "$path_val" ]]; then # Ensure target dir still exists
+    if [[ -d "$path_val" ]]; then 
       hook_target_dirs_final+=("$path_val")
     fi
   done
   
-  # Create a unique list of directories that were backed up to.
+  # Create a unique list of directories that were backed up to.  
   unique_final_paths=()
   if [[ ${#hook_target_dirs_final[@]} -gt 0 ]]; then
     IFS=$'\n' read -d '' -ra unique_final_paths < <(printf "%s\n" "${hook_target_dirs_final[@]}" | sort -u && printf '\0')
@@ -426,10 +456,10 @@ elif [[ -d "$HOOKS_DIR" ]]; then
         echo ""
         echo "Hooks: Running post-backup hook: $hook on targets: ${unique_final_paths[*]}"
         "$hook" "${unique_final_paths[@]}"
-      elif [[ -f "$hook" ]]; then # File exists but not executable
+      elif [[ -f "$hook" ]]; then 
         echo ""
         echo "Hooks: Skipping non-executable file hook: $hook"
-      else # Not a file (e.g. broken symlink, subdirectory in hooks-enabled)
+      else 
         echo ""
         echo "Hooks: Skipping non-file or non-executable item in hooks directory: $hook"
       fi
@@ -439,7 +469,7 @@ elif [[ -d "$HOOKS_DIR" ]]; then
     echo "Hooks: No valid target directories available for hooks after processing."
   fi
 else
-  if [[ ! -d "$HOOKS_DIR" ]]; then # If HOOKS_DIR itself doesn't exist
+  if [[ ! -d "$HOOKS_DIR" ]]; then 
     echo ""
     echo "Hooks: No hooks directory found at $HOOKS_DIR, or directory is empty."
   fi

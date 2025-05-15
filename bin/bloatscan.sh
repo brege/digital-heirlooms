@@ -16,7 +16,6 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 # EXCLUDES_FILE will be determined after argument parsing
 EXCLUDES_FILE=""
-# EXCLUDES_FILE_DEFAULT is no longer a single static path, but determined by hierarchy
 
 # --- Argument Storage ---
 config_dir_arg=""   # Stores value from --config-dir
@@ -25,6 +24,7 @@ excludes_file_arg="" # Stores value from --excludes-file
 # Enable globstar and extglob for advanced matching
 shopt -s globstar extglob nullglob
 
+# --- Usage Information ---
 print_usage() {
   echo "Usage: $0 [OPTIONS] [target_path]"
   echo ""
@@ -44,6 +44,7 @@ print_usage() {
   echo "  --no-excludes          Do not use any exclude patterns."
   echo "  --excludes-file=<path> Path to a file containing exclude patterns (one per line)."
   echo "                         Overrides default exclude file lookup."
+  echo "                         (Default if no other options: $USER_HOME_CFG_ROOT/excludes/\$(whoami)@\$(hostname -s))"
   echo "  --help, -h             Show this help message."
 }
 
@@ -81,7 +82,7 @@ while [[ $# -gt 0 ]]; do
       shift
       ;;
     --excludes-file=*)
-      excludes_file_arg="${1#*=}" # Store arg, don't directly set EXCLUDES_FILE yet
+      excludes_file_arg="${1#*=}" 
       USE_EXCLUDES=1 
       shift
       ;;
@@ -91,7 +92,7 @@ while [[ $# -gt 0 ]]; do
       exit 1
       ;;
     *) 
-      if [[ -z "$TARGET_PATH_ARG" ]]; then # Changed from potential_target_path
+      if [[ -z "$TARGET_PATH_ARG" ]]; then 
         TARGET_PATH_ARG="$1"
       else
         echo "WARN: Unexpected argument: $1. Ignoring." >&2
@@ -102,7 +103,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 # --- Finalize Target Path for Scanning ---
-TARGET_PATH="$HOME" # Default if no argument is provided
+TARGET_PATH="$HOME" 
 if [[ -n "$TARGET_PATH_ARG" ]]; then
   if ! target_realpath_tmp="$(realpath "$TARGET_PATH_ARG" 2>/dev/null)"; then
     echo "ERROR: Invalid target path specified: '$TARGET_PATH_ARG' (realpath failed)." >&2
@@ -116,10 +117,10 @@ if [[ -n "$TARGET_PATH_ARG" ]]; then
 fi
 
 
-# --- Determine and Validate EXCLUDES_FILE Path (Theme 3 - BS.B) ---
+# --- Determine and Validate Excludes File Path ---
 HOSTNAME_SHORT="$(hostname -s)"
 WHOAMI_USER="$(whoami)"
-DEFAULT_EXCLUDE_FILENAME="${WHOAMI_USER}@${HOSTNAME_SHORT}" # Used by multiple tiers
+DEFAULT_EXCLUDE_FILENAME="${WHOAMI_USER}@${HOSTNAME_SHORT}" 
 
 if [[ "$USE_EXCLUDES" -eq 1 ]]; then
   if [[ -n "$excludes_file_arg" ]]; then
@@ -136,57 +137,55 @@ if [[ "$USE_EXCLUDES" -eq 1 ]]; then
     echo "INFO: --config-dir flag provided, deriving excludes path."
     cfg_dir_realpath_tmp=""
     if ! cfg_dir_realpath_tmp="$(realpath "$config_dir_arg" 2>/dev/null)"; then
-        echo "WARN: Invalid path specified with --config-dir: '$config_dir_arg' (realpath failed). Trying next default." >&2
-        # Fall through to user home default
+        echo "WARN: Invalid path specified with --config-dir: '$config_dir_arg' (realpath failed). Trying user default path." >&2
     elif [[ ! -d "$cfg_dir_realpath_tmp" ]]; then
-        echo "WARN: Path specified with --config-dir is not a directory: '$cfg_dir_realpath_tmp'. Trying next default." >&2
-        # Fall through to user home default
+        echo "WARN: Path specified with --config-dir is not a directory: '$cfg_dir_realpath_tmp'. Trying user default path." >&2
     else
-        # Use config_dir_arg to construct excludes path
         EXCLUDES_FILE="$cfg_dir_realpath_tmp/excludes/$DEFAULT_EXCLUDE_FILENAME"
-        # Attempt to create parent directory for convenience if we derived this path
         mkdir -p "$(dirname "$EXCLUDES_FILE")" 2>/dev/null || true
     fi
   fi
 
-  # Priority 3: User-centric default (if EXCLUDES_FILE still not set)
-  if [[ "$USE_EXCLUDES" -eq 1 && -z "$EXCLUDES_FILE" ]]; then
+  # Priority 3: User-centric default (if EXCLUDES_FILE still not set and USE_EXCLUDES is still 1)
+  if [[ "$USE_EXCLUDES" -eq 1 && -z "$EXCLUDES_FILE" ]]; then 
     echo "INFO: No --excludes-file or valid --config-dir for excludes. Using user default path."
     EXCLUDES_FILE="$USER_HOME_CFG_ROOT/excludes/$DEFAULT_EXCLUDE_FILENAME"
-    # Attempt to create parent directory for convenience
     mkdir -p "$(dirname "$EXCLUDES_FILE")" 2>/dev/null || true
   fi
 
-  # If after all attempts EXCLUDES_FILE is set, check if it's a file.
-  # No error if not found, just a message, and USE_EXCLUDES might be turned off below.
-  if [[ -n "$EXCLUDES_FILE" && ! -f "$EXCLUDES_FILE" ]]; then
+  # Final check if an exclude file path was determined (but not necessarily if it exists yet)
+  if [[ "$USE_EXCLUDES" -eq 1 && -n "$EXCLUDES_FILE" && ! -f "$EXCLUDES_FILE" ]]; then
     echo "INFO: Exclude file specified or derived does not exist: $EXCLUDES_FILE"
   fi
 else
-  EXCLUDES_FILE="" # Ensure it's empty if not using excludes
+  EXCLUDES_FILE="" 
 fi
 
 
-# --- Script Execution ---
+# --- Script Execution Initial Output ---
 echo "Bloatscan: Scanning directory: $TARGET_PATH"
 echo "Bloatscan: Maximum scan depth: $SCAN_DEPTH"
 echo "Bloatscan: Displaying top $DISPLAY_LIMIT entries by size."
 
+# --- Report Exclude File Status ---
 if [[ "$USE_EXCLUDES" -eq 1 && -n "$EXCLUDES_FILE" && -f "$EXCLUDES_FILE" ]]; then
   echo "Bloatscan: Using excludes from: $EXCLUDES_FILE"
-elif [[ "$USE_EXCLUDES" -eq 1 ]]; then # USE_EXCLUDES is true, but file wasn't found or EXCLUDES_FILE is empty
-  echo "Bloatscan: Exclude file not found or not specified. Scanning without specific excludes."
-  USE_EXCLUDES=0 # Force off if file is unusable
+elif [[ "$USE_EXCLUDES" -eq 1 ]]; then 
+  echo "Bloatscan: Exclude file was not found or not specified. Scanning without specific excludes."
+  USE_EXCLUDES=0 # Force off if file is unusable or path is empty
 else
   echo "Bloatscan: Scanning without user-defined excludes."
 fi
 echo
 
+# --- Setup Temporary File and Cleanup Trap ---
 TMP_FILE=$(mktemp)
 trap 'rm -f "$TMP_FILE"' EXIT
 
+# --- Print Results Header ---
 printf "%-10s  %10s  %8s  %-20s  %s\n" "Size" "Files" "Dirs" "Top-Level" "Path"
 
+# --- Read and Compile Exclude Patterns (if applicable) ---
 EXCLUDE_PATTERNS=()
 if [[ "$USE_EXCLUDES" -eq 1 && -n "$EXCLUDES_FILE" && -f "$EXCLUDES_FILE" ]]; then
   while IFS= read -r line; do
@@ -200,11 +199,14 @@ if [[ "$USE_EXCLUDES" -eq 1 && -n "$EXCLUDES_FILE" && -f "$EXCLUDES_FILE" ]]; th
   done < "$EXCLUDES_FILE"
 fi
 
+# --- Perform Main Directory Scan and Data Collection ---
+# Using find to locate directories, then shell loop applies custom excludes and gathers stats.
 find "$TARGET_PATH" -mindepth 1 -maxdepth "$SCAN_DEPTH" -type d \
   \( -path "$TARGET_PATH/.git" -o -path "$TARGET_PATH/.svn" -o -path "$TARGET_PATH/.hg" -o -path "$TARGET_PATH/.bzr" \) -prune \
   -o -print0 2>/dev/null |
   while IFS= read -r -d $'\0' dir_path; do
     skip_dir=0
+    # Check against all exclude patterns using glob matching
     for pattern_to_check in "${EXCLUDE_PATTERNS[@]}"; do
       if [[ "$dir_path" == $pattern_to_check || "$dir_path"/ == $pattern_to_check/* ]]; then
         skip_dir=1
@@ -216,15 +218,16 @@ find "$TARGET_PATH" -mindepth 1 -maxdepth "$SCAN_DEPTH" -type d \
       continue
     fi
 
+    # Gather directory statistics
     size_bytes=$(du -s --bytes "$dir_path" 2>/dev/null | awk '{print $1}')
-    if [[ ! "$size_bytes" =~ ^[0-9]+$ ]]; then
+    if [[ ! "$size_bytes" =~ ^[0-9]+$ ]]; then # Ensure numeric if du fails
         size_bytes=0
     fi
-
     size_hr=$(numfmt --to=iec-i --suffix=B --padding=7 "$size_bytes")
-    file_count=$(find "$dir_path" -type f 2>/dev/null | wc -l)
-    subdir_count=$(find "$dir_path" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | wc -l)
+    file_count=$(find "$dir_path" -maxdepth 1 -type f 2>/dev/null | wc -l) # Count only files directly in dir_path
+    subdir_count=$(find "$dir_path" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | wc -l) # Count only subdirs directly in dir_path
 
+    # Determine relative and top-level path components for display
     rel_path="${dir_path#"$TARGET_PATH"}"
     rel_path="${rel_path#/}"
     top_level="${rel_path%%/*}"
@@ -238,8 +241,10 @@ find "$TARGET_PATH" -mindepth 1 -maxdepth "$SCAN_DEPTH" -type d \
     printf "%-10s  %10d  %8d  %-20s  %s\n" "$size_hr" "$file_count" "$subdir_count" "$top_level" "$dir_path" >> "$TMP_FILE"
   done
 
-if [[ -s "$TMP_FILE" ]]; then
+# --- Sort and Display Final Results ---
+if [[ -s "$TMP_FILE" ]]; then # Check if TMP_FILE has data
     sort -hrk1 "$TMP_FILE" | head -n "$DISPLAY_LIMIT"
 else
     echo "Bloatscan: No directories found matching criteria or all were excluded."
 fi
+# Note: rm -f "$TMP_FILE" is handled by trap

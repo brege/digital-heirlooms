@@ -7,7 +7,7 @@ PROJECT_NAME="digital-heirlooms"
 
 # --- Default User Configuration & Paths ---
 USER_CONFIG_DEFAULT="$HOME/.config/$PROJECT_NAME"
-ENV_FILES_SUBDIR="env"
+ENV_FILES_SUBDIR="env" # Standard subdirectory for environment files
 
 EFFECTIVE_CONFIG_DIR=""
 
@@ -37,7 +37,7 @@ print_usage() {
   echo "  $0 --config-dir /mnt/myconfigs/$PROJECT_NAME special_setup.env"
 }
 
-# --- Argument Parsing (from Theme 1) ---
+# --- Argument Parsing ---
 while [[ $# -gt 0 ]]; do
   arg="$1"
   case "$arg" in
@@ -83,15 +83,14 @@ if [[ -z "$ENV_ARG_CAPTURED" ]]; then
   exit 1
 fi
 
-# --- Determine Effective Configuration Directory (Theme 2 Core) ---
+# --- Determine Effective Configuration Directory ---
 if [[ -n "$CONFIG_DIR_ARG" ]]; then
   EFFECTIVE_CONFIG_DIR="$CONFIG_DIR_ARG"
 else
   EFFECTIVE_CONFIG_DIR="$USER_CONFIG_DEFAULT"
 fi
 
-# --- Validate and Resolve EFFECTIVE_CONFIG_DIR (Theme 3 Core) ---
-# Store the original path for error messages before realpath potentially changes it or fails
+# --- Validate and Resolve EFFECTIVE_CONFIG_DIR ---
 cfg_dir_original_value="$EFFECTIVE_CONFIG_DIR"
 if ! config_dir_realpath_tmp="$(realpath "$EFFECTIVE_CONFIG_DIR" 2>/dev/null)"; then
     echo "ERROR: Invalid path specified for configuration directory: $cfg_dir_original_value" >&2
@@ -105,31 +104,49 @@ if [[ ! -d "$EFFECTIVE_CONFIG_DIR" ]]; then
     echo "       Please create it or use the --config-dir option to specify the correct path." >&2
     exit 1
 fi
-# At this point, EFFECTIVE_CONFIG_DIR is a validated, existing, absolute directory path.
 echo "INFO: Using effective user configuration directory: $EFFECTIVE_CONFIG_DIR"
 
 
-# The following logic for ENV_PATH and TARGET_LINK remains unchanged from Theme 1 & 2.
-# It does NOT yet use EFFECTIVE_CONFIG_DIR. This is for Theme 4 (Step UE3).
-
-# Determine full path
+# --- Determine Full Path to the Source Environment File (Theme 4 - UE3) ---
 ENV_PATH=""
 if [[ "$ENV_ARG_CAPTURED" = /* ]]; then
+  # Absolute path provided
   ENV_PATH="$ENV_ARG_CAPTURED"
 elif [[ "$ENV_ARG_CAPTURED" == */* ]]; then
-  ENV_PATH="$(realpath "$ENV_ARG_CAPTURED")" # This realpath is for the ENV_ARG itself if relative
+  # Relative path (contains a slash) - resolve it relative to CWD
+  if ! env_path_realpath_tmp="$(realpath "$ENV_ARG_CAPTURED" 2>/dev/null)"; then
+    echo "ERROR: Invalid relative path for environment file: $ENV_ARG_CAPTURED" >&2
+    exit 1
+  fi
+  ENV_PATH="$env_path_realpath_tmp"
 else
-  SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-  ENV_PATH="$(realpath "$SCRIPT_DIR/../config/env/$ENV_ARG_CAPTURED")"
+  # Just a filename — assume it lives in <EFFECTIVE_CONFIG_DIR>/<ENV_FILES_SUBDIR>/
+  PROPOSED_PATH="$EFFECTIVE_CONFIG_DIR/$ENV_FILES_SUBDIR/$ENV_ARG_CAPTURED"
+  if ! env_path_realpath_tmp="$(realpath "$PROPOSED_PATH" 2>/dev/null)"; then
+     echo "ERROR: Could not resolve path for environment file '$ENV_ARG_CAPTURED' expected at '$PROPOSED_PATH'" >&2
+     exit 1
+  fi
+  ENV_PATH="$env_path_realpath_tmp"
 fi
 
-# Target symlink location
-TARGET_LINK="$(cd "$(dirname "${BASH_SOURCE[0]}")/../config" && pwd)/backup.env"
+# --- Define Target Symlink Location (Theme 4 - UE3) ---
+# This is the 'backup.env' in the root of the *user's effective configuration directory*
+TARGET_LINK="$EFFECTIVE_CONFIG_DIR/backup.env"
 
+# --- Validate Source Environment File ---
 if [[ ! -f "$ENV_PATH" ]]; then
-  echo "ERROR: No such env file: $ENV_PATH" >&2
+  echo "ERROR: Source environment file not found or is not a regular file: $ENV_PATH" >&2
   exit 1
 fi
 
-ln -sf "$ENV_PATH" "$TARGET_LINK"
-echo "Linked $TARGET_LINK -> $ENV_PATH"
+# --- Create/Update Symlink ---
+echo "Attempting to link: $TARGET_LINK -> $ENV_PATH"
+if ln -sf "$ENV_PATH" "$TARGET_LINK"; then
+  echo "Successfully linked '$TARGET_LINK' to '$ENV_PATH'."
+else
+  # This error case was not explicitly in original, but good practice from target
+  echo "ERROR: Failed to create symlink. Check permissions or paths." >&2
+  exit 1
+fi
+
+# Repository convenience symlink logic will be added in Theme 5 (Step UE4)
