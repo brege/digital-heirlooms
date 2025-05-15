@@ -1,20 +1,37 @@
 #!/bin/bash
 set -euo pipefail
 
-# --- Resolve script base and config dir ---
-REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)" # Was BACKUPKIT_HOME
-CONFIG_ROOT_DEFAULT="$REPO_ROOT/config" # Default if no --config and no CONFIG_DIR in repo's backup.env
-CONFIG_ROOT="$CONFIG_ROOT_DEFAULT"      # Initial assumption
+# --- Project Configuration ---
+PROJECT_NAME="digital-heirlooms"
+
+# --- Script Path & Default Config Path ---
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# Default if no --config and no CONFIG_DIR in repo's backup.env
+CONFIG_ROOT_DEFAULT="$REPO_ROOT/config"
+
+# --- print_usage function ---
+print_usage() {
+  echo "Usage: $0 [OPTIONS]"
+  echo "Runs the backup process for $PROJECT_NAME."
+  echo ""
+  echo "Options:"
+  echo "  --config <path>        Specify the root directory for $PROJECT_NAME configurations."
+  echo "                         Overrides default behavior and any CONFIG_DIR from backup.env."
+  echo "  --help, -h             Show this help message."
+}
 
 # --- Argument parsing for --config ---
 CONFIG_ROOT_OVERRIDE=""
-# More robust argument parsing for --config VALUE and --config=VALUE
 # Create a temporary array from $@ to safely shift and inspect
 args_to_process=("$@")
 idx=0
 while [[ $idx -lt ${#args_to_process[@]} ]]; do
   arg_to_check="${args_to_process[$idx]}"
   case "$arg_to_check" in
+    --help|-h)
+      print_usage
+      exit 0
+      ;;
     --config)
       if [[ -n "${args_to_process[$((idx + 1))]:-}" && "${args_to_process[$((idx + 1))]}" != --* ]]; then
         CONFIG_ROOT_OVERRIDE="${args_to_process[$((idx + 1))]}"
@@ -26,22 +43,31 @@ while [[ $idx -lt ${#args_to_process[@]} ]]; do
     --config=*)
       CONFIG_ROOT_OVERRIDE="${arg_to_check#*=}"
       ;;
+    -*)
+      echo "ERROR: Unknown option: $arg_to_check" >&2
+      print_usage
+      exit 1
+      ;;
     *)
       # Other arguments can be processed here if run_backup.sh takes more options
-      # For now, we only care about --config
+      # For now, we only care about --config. Non-matching args are passed over.
+      :
       ;;
   esac
   ((idx++))
 done
 
-# cfg_override_set is a clearer name for _USER_CONFIG_DIR_EFFECTIVELY_SET_BY_FLAG
+# --- Resolve script base and config dir ---
+CONFIG_ROOT="$CONFIG_ROOT_DEFAULT"      # Initial assumption
+
 cfg_override_set=false
 if [[ -n "$CONFIG_ROOT_OVERRIDE" ]]; then
   # --config was provided, use its value directly
-  if ! CONFIG_ROOT="$(realpath "$CONFIG_ROOT_OVERRIDE")"; then
+  if ! config_root_realpath_temp="$(realpath "$CONFIG_ROOT_OVERRIDE" 2>/dev/null)"; then
     echo "ERROR: Invalid path specified with --config: $CONFIG_ROOT_OVERRIDE" >&2
     exit 1
   fi
+  CONFIG_ROOT="$config_root_realpath_temp"
   cfg_override_set=true
 else
   # No --config, use default logic:
@@ -49,16 +75,15 @@ else
   DEFAULT_REPO_ENV_FILE="$CONFIG_ROOT_DEFAULT/backup.env"
   if [[ -f "$DEFAULT_REPO_ENV_FILE" ]]; then
     # Source into a subshell to safely extract CONFIG_DIR
-    # Shortened: USER_SPECIFIC_CONFIG_DIR_FROM_DEFAULT_ENV
-    sourced_cfg_dir=$( (source "$DEFAULT_REPO_ENV_FILE" >/dev/null 2>&1 && echo "$CONFIG_DIR") )
+    sourced_cfg_dir=$( (CONFIG_DIR="" source "$DEFAULT_REPO_ENV_FILE" >/dev/null 2>&1 && echo "$CONFIG_DIR") )
     if [[ -n "$sourced_cfg_dir" ]]; then
-      if ! CONFIG_ROOT="$(realpath "$sourced_cfg_dir")"; then
+      if ! sourced_cfg_dir_realpath="$(realpath "$sourced_cfg_dir" 2>/dev/null)"; then
         echo "ERROR: Invalid CONFIG_DIR specified in $DEFAULT_REPO_ENV_FILE: $sourced_cfg_dir" >&2
         exit 1
       fi
+      CONFIG_ROOT="$sourced_cfg_dir_realpath"
     fi
   fi
-  cfg_override_set=false
 fi
 
 # Now, CONFIG_ROOT is definitively set.
@@ -66,16 +91,18 @@ fi
 ENV_FILE_TO_SOURCE="$CONFIG_ROOT/backup.env"
 if [[ -f "$ENV_FILE_TO_SOURCE" ]]; then
   set -a  # Auto-export all variables from this env file
-  # Shortened: _TEMP_CONFIG_DIR_BEFORE_SOURCE
   prev_cfg_dir_val="${CONFIG_DIR:-}"
   source "$ENV_FILE_TO_SOURCE"
   set +a
   if [[ "$cfg_override_set" == true ]]; then
       CONFIG_DIR="${prev_cfg_dir_val}"
-  elif [[ -n "${CONFIG_DIR:-}" && "$CONFIG_ROOT" != "$(realpath "${CONFIG_DIR}")" ]]; then
-      if ! CONFIG_ROOT="$(realpath "${CONFIG_DIR}")"; then
+  elif [[ -n "${CONFIG_DIR:-}" ]]; then
+      if ! new_config_root_realpath="$(realpath "${CONFIG_DIR}" 2>/dev/null)"; then
           echo "ERROR: Invalid CONFIG_DIR specified in $ENV_FILE_TO_SOURCE: ${CONFIG_DIR}" >&2
           exit 1
+      fi
+      if [[ "$CONFIG_ROOT" != "$new_config_root_realpath" ]]; then
+         CONFIG_ROOT="$new_config_root_realpath"
       fi
   fi
 else
@@ -97,7 +124,6 @@ echo "Using excludes from: $EXCLUDES_DIR"
 echo "Using hooks from: $HOOKS_DIR"
 
 # Setup rsync's default exclude file
-# Shortened: _DEFAULT_EXCLUDE_FILE_PATH
 dflt_exclude_path="$EXCLUDES_DIR/default.exclude"
 if [[ -f "$dflt_exclude_path" ]]; then
   echo "Applying global excludes from: $dflt_exclude_path"
@@ -110,8 +136,9 @@ fi
 REMOTE_TARGET_BASE="${REMOTE_TARGET_BASE:-}"
 DRY_RUN="${DRY_RUN:-false}"
 
-direct_remote_rsync=false # Not currently used, but present in original
-staged_dirs=()           # Not currently used, but present in original
+# Not currently used, but present in original
+direct_remote_rsync=false
+staged_dirs=()
 
 current_user=""
 current_host=""
@@ -131,7 +158,8 @@ flush_backup() {
   local staged_locally_this_flush=false
 
   for src_path in "${backup_paths[@]}"; do
-    local rsync_cmd=(rsync -avzR --delete) # Initialize with base options
+    # Initialize with base options
+    local rsync_cmd=(rsync -avzR --delete)
 
     # Add global exclude file
     if [[ -n "$default_exclude" && -f "$default_exclude" ]]; then
@@ -148,7 +176,8 @@ flush_backup() {
       target_machine_roots["$current_user@$current_host"]="$dest_dir"
 
       src_path_expanded=""
-      use_ssh=true # Assume SSH by default for this scenario if host isn't local
+      # Assume SSH by default for this scenario if host isn't local
+      use_ssh=true
       if is_local_host "$current_host"; then
         use_ssh=false
         src_path_expanded="$src_path"
@@ -171,7 +200,7 @@ flush_backup() {
       fi
       rsync_cmd+=("$src_path_expanded" "$dest_dir")
 
-      echo "" # Spacing
+      echo ""
       echo "Rsyncing to local staging ($current_user@$current_host):"
       echo "Path: $src_path_expanded -> $dest_dir"
       "${rsync_cmd[@]}"
@@ -188,7 +217,7 @@ flush_backup() {
       fi
       rsync_cmd+=(-e ssh "$src_path_expanded" "${dest_dir%/}/")
 
-      echo "" # Spacing
+      echo ""
       echo "Rsyncing directly to remote ($current_user@$current_host):"
       echo "Path: $src_path_expanded -> ${dest_dir%/}/"
       "${rsync_cmd[@]}"
@@ -203,7 +232,8 @@ flush_backup() {
       target_machine_roots["$current_user@$current_host"]="$dest_dir"
 
       src_path_expanded=""
-      use_ssh=true # Assume SSH if host isn't local
+      # Assume SSH if host isn't local
+      use_ssh=true
       if is_local_host "$current_host"; then
         use_ssh=false
         src_path_expanded="$src_path"
@@ -224,7 +254,7 @@ flush_backup() {
       fi
       rsync_cmd+=("$src_path_expanded" "$dest_dir")
 
-      echo "" # Spacing
+      echo ""
       echo "Rsyncing to local destination ($current_user@$current_host):"
       echo "Path: $src_path_expanded -> $dest_dir"
       "${rsync_cmd[@]}"
@@ -236,7 +266,7 @@ flush_backup() {
     local local_stage_path="${LOCAL_TARGET_BASE%/}/$current_user@$current_host"
     local remote_dest_path="$REMOTE_TARGET_BASE/$current_user@$current_host"
 
-    echo "" # Spacing
+    echo ""
     echo "Syncing staged data for $current_user@$current_host to remote..."
     echo "Path: $local_stage_path/ -> $remote_dest_path/"
 
@@ -257,8 +287,8 @@ machine_processed_count=0
 config_file_found_in_enabled_dir=false
 for config_file in "$MACHINES_ENABLED_DIR"/*; do
   if [[ ! -f "$config_file" ]]; then
+    # This handles the case where MACHINES_ENABLED_DIR is empty
     if [[ "$config_file" == "$MACHINES_ENABLED_DIR/*" ]]; then
-        # This handles the case where MACHINES_ENABLED_DIR is empty
         :
     else
         echo "WARN: Skipping non-file in MACHINES_ENABLED_DIR: $config_file" >&2
@@ -285,7 +315,7 @@ for config_file in "$MACHINES_ENABLED_DIR"/*; do
       current_user="${BASH_REMATCH[1]}"
       current_host="${BASH_REMATCH[2]}"
       current_exclude="$EXCLUDES_DIR/$current_user@$current_host"
-      echo "" # Spacing
+      echo ""
       echo "Processing machine: $current_user@$current_host from $config_file"
       machine_processed_count=$((machine_processed_count + 1))
       continue
@@ -293,7 +323,8 @@ for config_file in "$MACHINES_ENABLED_DIR"/*; do
 
     if [[ "$line" == src=* && -n "$current_user" && -n "$current_host" ]]; then
       raw_path="${line#src=}"
-      expanded_path=$(eval echo "$raw_path") # eval is a potential security risk if $raw_path is not trusted
+      # eval is a potential security risk if $raw_path is not trusted
+      expanded_path=$(eval echo "$raw_path")
       backup_paths+=("$expanded_path")
     fi
   done < "$config_file"
@@ -323,36 +354,31 @@ elif [[ -d "$HOOKS_DIR" ]]; then
       hook_target_dirs_final+=("$path_val")
     fi
   done
-  # Using a more robust way to get unique paths, handles spaces in paths.
-  # Original: IFS=$'\n' read -d '' -ra unique_final_paths < <(printf "%s\n" "${hook_target_dirs_final[@]}" | sort -u && printf '\0')
-  # Simpler for now if paths are not expected to have newlines.
-  # For sanitization, keep original unless it's broken. Original is fine.
   IFS=$'\n' read -d '' -ra unique_final_paths < <(printf "%s\n" "${hook_target_dirs_final[@]}" | sort -u && printf '\0')
-
 
   if [[ ${#unique_final_paths[@]} -gt 0 ]]; then
     for hook in "$HOOKS_DIR"/*; do
       if [[ -f "$hook" && -x "$hook" ]]; then
-        echo "" # Spacing
+        echo ""
         echo "Hooks: Running post-backup hook: $hook on targets: ${unique_final_paths[*]}"
         "$hook" "${unique_final_paths[@]}"
       elif [[ -f "$hook" ]]; then
-        echo "" # Spacing
+        echo ""
         echo "Hooks: Skipping non-executable file hook: $hook"
       else
-        echo "" # Spacing
+        echo ""
         echo "Hooks: Skipping non-file or non-executable item in hooks directory: $hook"
       fi
     done
   else
-    echo "" # Spacing
+    echo ""
     echo "Hooks: No valid target directories available for hooks after processing."
   fi
 else
   if [[ ! -d "$HOOKS_DIR" ]]; then
-    echo "" # Spacing
+    echo ""
     echo "Hooks: No hooks directory found at $HOOKS_DIR, or directory is empty."
   fi
 fi
-echo "" # Spacing
+echo ""
 echo "All operations complete."

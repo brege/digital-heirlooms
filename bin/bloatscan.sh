@@ -1,12 +1,15 @@
 #!/bin/bash
 set -euo pipefail
 
+# --- Project Configuration ---
+PROJECT_NAME="digital-heirlooms"
+
 # --- Defaults ---
-TARGET_PATH="${1:-$HOME}" # Renamed from TARGET to be more specific
-SCAN_DEPTH=4              # Renamed from DEPTH
-DISPLAY_LIMIT=30          # Renamed from LIMIT
+TARGET_PATH="${1:-$HOME}" # Will be properly set via potential_target_path after parsing
+SCAN_DEPTH=4
+DISPLAY_LIMIT=30
 USE_EXCLUDES=1
-REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)" # Was BACKUPKIT_HOME
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # Default excludes file path, now uses REPO_ROOT and short hostname
 EXCLUDES_FILE_DEFAULT="$REPO_ROOT/config/excludes/$(whoami)@$(hostname -s)"
 EXCLUDES_FILE="$EXCLUDES_FILE_DEFAULT" # Actual excludes file to use, may be overridden by flag
@@ -14,16 +17,35 @@ EXCLUDES_FILE="$EXCLUDES_FILE_DEFAULT" # Actual excludes file to use, may be ove
 # Enable globstar and extglob for advanced matching
 shopt -s globstar extglob nullglob
 
+print_usage() {
+  echo "Usage: $0 [OPTIONS] [target_path]"
+  echo ""
+  echo "Scans a directory to identify large subdirectories ('bloat')."
+  echo "Results are sorted by size, largest first."
+  echo ""
+  echo "Arguments:"
+  echo "  [target_path]          The directory to scan. Defaults to \$HOME if not specified."
+  echo ""
+  echo "Options:"
+  echo "  --depth=<num>          Maximum depth to scan into subdirectories (Default: $SCAN_DEPTH)."
+  echo "  --limit=<num>          Number of top entries to display (Default: $DISPLAY_LIMIT)."
+  echo "  --no-excludes          Do not use any exclude patterns."
+  echo "  --excludes-file=<path> Path to a file containing exclude patterns (one per line)."
+  echo "                         (Default: $EXCLUDES_FILE_DEFAULT or as per --config-dir in later themes)"
+  echo "  --help, -h             Show this help message."
+}
+
 # --- Argument Parsing ---
 # Flags can be interspersed with the optional target path argument.
 # The first non-option argument encountered will be considered the TARGET_PATH.
-potential_target_path=""
-
-# Temporary array to hold arguments that are not processed by this loop
-remaining_args=()
+potential_target_path="" # Intentionally not pre-filling with $1 here
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
+    --help|-h)
+      print_usage
+      exit 0
+      ;;
     --depth=*)
       SCAN_DEPTH="${1#*=}"
       shift
@@ -42,16 +64,16 @@ while [[ $# -gt 0 ]]; do
       shift
       ;;
     -*) # Unknown flag
-      echo "WARN: Unknown option: $1" >&2
-      shift
+      echo "ERROR: Unknown option: $1" >&2
+      print_usage
+      exit 1
       ;;
     *) # Positional argument
       if [[ -z "$potential_target_path" ]]; then
         potential_target_path="$1"
       else
         # If potential_target_path is already set, this is an unexpected additional positional argument.
-        # The original script ignored it; this version will too for sanitization pass.
-        # A refactor might make this an error or handle multiple targets if desired.
+        # The original script ignored it with a warning; maintaining that behavior.
         echo "WARN: Unexpected argument: $1. Ignoring." >&2
       fi
       shift
@@ -62,7 +84,10 @@ done
 # Finalize TARGET_PATH: use potential_target_path if set, otherwise stick to initial default ($HOME)
 if [[ -n "$potential_target_path" ]]; then
   TARGET_PATH="$potential_target_path"
+elif [[ -z "${1:-}" && -z "$potential_target_path" ]]; then # If $1 was never processed and no potential_target_path set
+  TARGET_PATH="$HOME" # Explicitly set to $HOME if no path arg was ever given
 fi
+
 
 # --- Script Execution ---
 echo "Bloatscan: Scanning directory: $TARGET_PATH"
@@ -74,14 +99,11 @@ if [[ "$USE_EXCLUDES" -eq 1 ]]; then
     echo "Bloatscan: Using excludes from: $EXCLUDES_FILE"
   else
     echo "Bloatscan: Exclude file not found (or not specified): $EXCLUDES_FILE. Scanning without specific excludes."
-    # USE_EXCLUDES=0 # Optionally, force no excludes if file not found. Original script did not explicitly do this.
-                     # For sanitization, keeping original behavior: it would try to read a non-existent file (no error due to check below)
-                     # or EXCLUDE_PATTERNS would remain empty.
   fi
 else
   echo "Bloatscan: Scanning without user-defined excludes."
 fi
-echo # blank line
+echo
 
 TMP_FILE=$(mktemp)
 # Ensure TMP_FILE is removed on exit
@@ -96,25 +118,26 @@ if [[ "$USE_EXCLUDES" -eq 1 && -f "$EXCLUDES_FILE" ]]; then
   while IFS= read -r line; do
     # Remove comments and leading/trailing whitespace
     line="${line%%#*}"
-    line="${line#"${line%%[![:space:]]*}"}" # Trim leading whitespace
-    line="${line%"${line##*[![:space:]]}"}"  # Trim trailing whitespace
+    line="${line#"${line%%[![:space:]]*}"}" 
+    line="${line%"${line##*[![:space:]]}"}"  
     [[ -z "$line" ]] && continue
 
-    expanded_pattern="${line/#\~/$HOME}" # Expand tilde
-    expanded_pattern="${expanded_pattern%/}"   # Remove trailing slash for consistent matching
+    # Expand tilde
+    expanded_pattern="${line/#\~/$HOME}"
+    # Remove trailing slash for consistent matching
+    expanded_pattern="${expanded_pattern%/}"
     EXCLUDE_PATTERNS+=("$expanded_pattern")
   done < "$EXCLUDES_FILE"
 fi
 
 # Main scan
 # Using find's -prune for excludes is generally more efficient.
-# Original script comment: "Sticking to that for minimal change." - this refers to shell loop glob matching.
-# The find command itself is for finding directories, then shell loop applies excludes.
+# This script uses shell loop glob matching for excludes after find identifies directories.
 find "$TARGET_PATH" -mindepth 1 -maxdepth "$SCAN_DEPTH" -type d \
   \( -path "$TARGET_PATH/.git" -o -path "$TARGET_PATH/.svn" -o -path "$TARGET_PATH/.hg" -o -path "$TARGET_PATH/.bzr" \) -prune \
   -o -print0 2>/dev/null |
-  while IFS= read -r -d $'\0' dir_path; do # Renamed 'dir' to 'dir_path' for clarity
-    skip_dir=0 # Renamed 'skip' to 'skip_dir'
+  while IFS= read -r -d $'\0' dir_path; do
+    skip_dir=0
 
     # Check against all exclude patterns using glob matching
     for pattern_to_check in "${EXCLUDE_PATTERNS[@]}"; do
@@ -131,7 +154,7 @@ find "$TARGET_PATH" -mindepth 1 -maxdepth "$SCAN_DEPTH" -type d \
 
     # awk to better grab first field, ensure it's a number
     size_bytes=$(du -s --bytes "$dir_path" 2>/dev/null | awk '{print $1}')
-    if [[ ! "$size_bytes" =~ ^[0-9]+$ ]]; then # Simpler check for numeric
+    if [[ ! "$size_bytes" =~ ^[0-9]+$ ]]; then
         size_bytes=0
     fi
 
@@ -142,13 +165,13 @@ find "$TARGET_PATH" -mindepth 1 -maxdepth "$SCAN_DEPTH" -type d \
     subdir_count=$(find "$dir_path" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | wc -l)
 
     rel_path="${dir_path#"$TARGET_PATH"}"
-    rel_path="${rel_path#/}" 
+    rel_path="${rel_path#/}"
     top_level="${rel_path%%/*}"
     if [[ -z "$top_level" && -n "$rel_path" ]]; then # Handle case where dir is direct child
       top_level="$rel_path"
     fi
     if [[ "$TARGET_PATH" == "$dir_path" ]]; then # Handle case where dir is TARGET_PATH itself
-      top_level="." 
+      top_level="."
     fi
 
     printf "%-10s  %10d  %8d  %-20s  %s\n" "$size_hr" "$file_count" "$subdir_count" "$top_level" "$dir_path" >> "$TMP_FILE"

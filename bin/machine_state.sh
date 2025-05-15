@@ -1,98 +1,139 @@
 #!/bin/bash
 set -euo pipefail
 
-# --- Config Directory Resolution ---
-# Default to script-relative config
-REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)" # Was BACKUPKIT_HOME
-CONFIG_ROOT_DEFAULT="$REPO_ROOT/config"
-CONFIG_ROOT="$CONFIG_ROOT_DEFAULT"
+# --- Project Configuration ---
+PROJECT_NAME="digital-heirlooms"
 
-# Check for --config override and --help
-# Note: Original script's argument parsing allows --config to be anywhere.
-# This simple loop processes it if found. More robust parsing is a refactor goal.
-for arg in "$@"; do
-  case $arg in
+# --- Script Path & Default Config Path ---
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+CONFIG_ROOT_DEFAULT="$REPO_ROOT/config"
+
+# --- Argument Storage ---
+ACTION="" # Was ACTION_CAPTURED, reverting to original name's intent
+MACHINE_NAMES=() # Was MACHINE_NAMES_CAPTURED
+config_arg=""   # Was CONFIG_DIR_ARG, now shorter and lowercase
+
+print_usage() {
+  echo "Usage: $0 [OPTIONS] <action> <machine_name> [machine_name...]"
+  echo ""
+  echo "Manages symlinks for machine configurations for $PROJECT_NAME."
+  echo ""
+  echo "Actions:"
+  echo "  enable                 Enable the specified machine(s) for backup."
+  echo "  disable                Disable the specified machine(s) for backup."
+  echo ""
+  echo "Options:"
+  echo "  --config <path>        Specify the root directory for $PROJECT_NAME configurations."
+  echo "                         Overrides default behavior of using '$CONFIG_ROOT_DEFAULT'"
+  echo "                         or the CONFIG_DIR from '$CONFIG_ROOT_DEFAULT/backup.env'."
+  echo "  --help, -h             Show this help message."
+}
+
+# --- Argument Parsing for Options ---
+while [[ $# -gt 0 ]]; do
+  current_arg="$1" # Using a more common name for the loop variable
+  case "$current_arg" in
     --config=*)
-      CONFIG_ROOT="$(realpath "${arg#*=}")"
-      # Original script shifted here. For sanitization, we'll note that this
-      # simple loop doesn't remove it from $@ for later POSITIONAL processing.
-      # A full refactor would handle this with a better loop.
+      config_arg="${current_arg#*=}"
+      shift
+      ;;
+    --config)
+      if [[ -n "${2:-}" && "${2}" != --* ]]; then
+        config_arg="$2"
+        shift 2
+      else
+        echo "ERROR: --config requires a value." >&2
+        print_usage
+        exit 1
+      fi
       ;;
     --help|-h)
-      echo "Usage: $0 [--config=/path/to/config] [enable|disable] <machine>"
-      echo ""
-      echo "Manages symlinks for machine configs."
-      echo "Priority for config location:"
-      echo "  1. --config flag"
-      echo "  2. CONFIG_DIR set in config/backup.env (if backup.env is sourced and defines it)"
-      echo "  3. Default to REPO_ROOT/config" # Was BACKUPKIT_HOME
+      print_usage
       exit 0
+      ;;
+    -*)
+      echo "ERROR: Unknown option: $current_arg" >&2
+      print_usage
+      exit 1
+      ;;
+    *)
+      break # End of options
       ;;
   esac
 done
 
-# Attempt to source backup.env and use CONFIG_DIR from there
-# Note: backup.env is typically in CONFIG_ROOT_DEFAULT, not necessarily the overridden CONFIG_ROOT
-ENV_FILE_TO_SOURCE="$CONFIG_ROOT_DEFAULT/backup.env"
-if [[ -f "$ENV_FILE_TO_SOURCE" ]]; then
-  # shellcheck disable=SC1090
-  # Shortened: current_config_dir_val_before_source
-  prev_cfg_dir_val="${CONFIG_DIR:-}" # Save current CONFIG_DIR if set by env
-  source "$ENV_FILE_TO_SOURCE"
-  # If --config was given, it takes precedence. Otherwise, let backup.env's CONFIG_DIR take effect.
-  # This logic assumes CONFIG_DIR in backup.env is the *main* config dir.
-  if [[ "$CONFIG_ROOT" == "$CONFIG_ROOT_DEFAULT" ]]; then # Only override if --config was not used
-    CONFIG_ROOT="${CONFIG_DIR:-$CONFIG_ROOT}"
-  else # If --config was used, restore CONFIG_DIR from backup.env if it was set
-    CONFIG_DIR="${prev_cfg_dir_val}"
+# --- Config Directory Resolution (Preserving Original Logic with New Arg Parser) ---
+CONFIG_ROOT="$CONFIG_ROOT_DEFAULT" # Default to script-relative config
+
+if [[ -n "$config_arg" ]]; then
+  # If --config was used, it takes highest precedence.
+  if ! config_root_realpath="$(realpath "$config_arg" 2>/dev/null)"; then # Shorter temp var
+      echo "ERROR: Invalid path specified with --config: $config_arg" >&2
+      exit 1
+  fi
+  CONFIG_ROOT="$config_root_realpath"
+else
+  # If --config was NOT used, attempt to source backup.env from default location
+  # This preserves the original script's behavior.
+  # Using original variable name "ENV_FILE_TO_SOURCE"
+  ENV_FILE_TO_SOURCE="$CONFIG_ROOT_DEFAULT/backup.env"
+  if [[ -f "$ENV_FILE_TO_SOURCE" ]]; then
+    # shellcheck disable=SC1090
+    # Using original variable name "prev_cfg_dir_val" and its exact original definition
+    prev_cfg_dir_val="${CONFIG_DIR:-}" 
+    
+    # Sourcing carefully to get CONFIG_DIR value IF SET BY THE SOURCED FILE
+    # Using a more concise variable "sourced_cfg_dir"
+    sourced_cfg_dir=$(CONFIG_DIR="" source "$ENV_FILE_TO_SOURCE" >/dev/null 2>&1 && echo "$CONFIG_DIR")
+
+    if [[ -n "$sourced_cfg_dir" ]]; then
+        # If backup.env defined CONFIG_DIR, use it.
+        if ! sourced_cfg_dir_realpath="$(realpath "$sourced_cfg_dir" 2>/dev/null)"; then # Shorter temp var
+            echo "ERROR: Invalid CONFIG_DIR specified in $ENV_FILE_TO_SOURCE: $sourced_cfg_dir" >&2
+            exit 1
+        fi
+        CONFIG_ROOT="$sourced_cfg_dir_realpath"
+    fi
+    # Restoring CONFIG_DIR variable to its state before sourcing, as in the original script
+    CONFIG_DIR="${prev_cfg_dir_val}" 
   fi
 fi
 
-# These paths should be relative to the final CONFIG_ROOT
-MACHINES_ENABLED_DIR="$CONFIG_ROOT/machines-enabled"
-AVAILABLE_DIR="$CONFIG_ROOT/machines-available"
-
-# --- Globals & Defaults ---
-
-# ACTION should be the first argument after any --config flag has been *conceptually* processed.
-# This script's original arg parsing is simple; robust parsing is for refactoring.
-ACTION="${1:-}"
-if [[ -z "$ACTION" || ( "$ACTION" != "enable" && "$ACTION" != "disable" ) ]]; then
-  # If no action or invalid action, and it's not a --help case (handled above)
-  if [[ $# -lt 2 && "$ACTION" != "enable" && "$ACTION" != "disable" ]]; then
-    echo "ERROR: Invalid action or missing arguments. Use 'enable' or 'disable' followed by machine name(s)." >&2
-    echo "Run '$0 --help' for more information." >&2 # Also to stderr
-    exit 1
-  fi
-  if [[ "$ACTION" != "enable" && "$ACTION" != "disable" ]]; then
-    echo "ERROR: Invalid action '$ACTION'. Must be 'enable' or 'disable'." >&2
-    echo "Run '$0 --help' for more information." >&2 # Also to stderr
-    exit 1
+# --- Positional Argument Processing (Action and Machine Names) ---
+if [[ $# -gt 0 ]]; then
+  ACTION="$1" # Use original variable name
+  shift
+  MACHINE_NAMES=("$@") # Use concise name
+else
+  if [[ -z "$ACTION" ]]; then # ACTION would be empty if only options were passed
+      echo "ERROR: No action specified." >&2
+      print_usage
+      exit 1
   fi
 fi
 
-# Shift action so $@ contains only machine names.
-# This shift happens *after* the --config loop, so if --config was not the first arg,
-# this might not behave as intended if --config is between action and machines.
-# This is a limitation of the original script's parsing logic.
-if [[ $# -gt 0 ]]; then # Ensure there's something to shift
-    shift || true 
-else # Should have been caught by previous checks if ACTION was expected
-    echo "ERROR: No arguments found to process for action and machine names." >&2
-    exit 1
-fi
-
-
-if [[ $# -eq 0 ]]; then
-  echo "ERROR: No machine names provided for action '$ACTION'." >&2
-  echo "Run '$0 --help' for more information." >&2 # Also to stderr
+# --- Validate Action and Machine Names ---
+if [[ "$ACTION" != "enable" && "$ACTION" != "disable" ]]; then
+  echo "ERROR: Invalid action '$ACTION'. Must be 'enable' or 'disable'." >&2
+  print_usage
   exit 1
 fi
 
-# --- Enable/Disable Machines ---
+if [[ ${#MACHINE_NAMES[@]} -eq 0 ]]; then
+  echo "ERROR: No machine names provided for action '$ACTION'." >&2
+  print_usage
+  exit 1
+fi
 
-# This block is now correctly processed after action and machine names are confirmed.
-for machine in "$@"; do
+# --- Define Paths Relative to Final CONFIG_ROOT ---
+MACHINES_ENABLED_DIR="$CONFIG_ROOT/machines-enabled"
+AVAILABLE_DIR="$CONFIG_ROOT/machines-available" # Original name from input script
+
+# --- Enable/Disable Machines ---
+echo "Using configuration root: $CONFIG_ROOT"
+
+for machine in "${MACHINE_NAMES[@]}"; do
   machine_config_path="$AVAILABLE_DIR/$machine"
   if [[ ! -f "$machine_config_path" ]]; then
     echo "WARN: Configuration file for '$machine' not found in $AVAILABLE_DIR. Skipping." >&2
@@ -101,17 +142,19 @@ for machine in "$@"; do
 
   target_link="$MACHINES_ENABLED_DIR/$machine"
   if [[ "$ACTION" == "enable" ]]; then
-    mkdir -p "$MACHINES_ENABLED_DIR"
+    if [[ ! -d "$MACHINES_ENABLED_DIR" ]]; then
+        mkdir -p "$MACHINES_ENABLED_DIR"
+    fi
     ln -sf "$machine_config_path" "$target_link"
     echo "Machine State: Enabled machine configuration for '$machine'."
   else # Action is "disable"
-    if [[ -L "$target_link" ]]; then # Check if the symlink exists before trying to remove
+    if [[ -L "$target_link" ]]; then
       rm -f "$target_link"
       echo "Machine State: Disabled machine configuration for '$machine'."
-    elif [[ -e "$target_link" ]]; then # It exists but is not a symlink
+    elif [[ -e "$target_link" ]]; then
       echo "WARN: '$target_link' exists but is not a symlink. Manual removal may be required." >&2
     else
-      echo "Machine State: Configuration for '$machine' was not enabled. No action taken."
+      echo "Machine State: Configuration for '$machine' was not enabled. No action taken for 'disable'."
     fi
   fi
 done

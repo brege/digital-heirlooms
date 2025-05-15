@@ -3,9 +3,16 @@
 
 set -euo pipefail
 
+# --- Project Configuration ---
+PROJECT_NAME="digital-heirlooms"
+
 # --- Script and User Configuration Paths ---
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-USER_CONFIG_DEFAULT="$HOME/.config/digital-heirlooms"
+# USER_CONFIG_DEFAULT is defined here primarily for print_usage in Theme 1.
+# Its full role in setting the effective config path will be handled in Theme 2.
+USER_CONFIG_DEFAULT="$HOME/.config/$PROJECT_NAME"
+# The following variables will be re-evaluated or replaced in subsequent themes
+# as the config directory logic becomes more robust.
 USER_CONFIG_OVERRIDE_VAR_NAME="CONFIG_DIR_USER_OVERRIDE"
 CONFIG_DIR_USER="${!USER_CONFIG_OVERRIDE_VAR_NAME:-$USER_CONFIG_DEFAULT}"
 
@@ -15,7 +22,7 @@ IDENT="${USER_NAME}@${HOST_NAME}"
 
 PLACEHOLDER="__user__@__hostname__"
 
-# Paths for user configuration files and templates
+# Paths for user configuration files and templates (to be reviewed in later themes)
 USER_ENV_SRC_TEMPLATE="$SCRIPT_DIR/config/env/${PLACEHOLDER}_.env.template"
 USER_ENV_DEST="$CONFIG_DIR_USER/env/${IDENT}_.env"
 USER_EXCLUDES_SRC_TEMPLATE="$SCRIPT_DIR/config/excludes/${PLACEHOLDER}"
@@ -30,25 +37,72 @@ REPO_HOOKS_DIR="$SCRIPT_DIR/config/hooks"
 USER_HOOKS_AVAIL_DIR="$CONFIG_DIR_USER/hooks-available"
 USER_HOOKS_ENABLED_DIR="$CONFIG_DIR_USER/hooks-enabled"
 
-# --- Flags and Mode ---
+# --- Flags ---
 FORCE_FLAG=false
 RUN_TEST_FLAG=false
-MODE="setup"
+USER_CONFIG_DIR_ARG="" # To store value from --user-config-dir
 
-# Initial argument parsing (simple version from original script)
-if [[ "${1:-}" == "--force" ]]; then
-  FORCE_FLAG=true
-  MODE="setup --force"
-  shift
-fi
-if [[ "${1:-}" == "--test" ]]; then
-  RUN_TEST_FLAG=true
-  MODE="test"
-fi
+print_usage() {
+  echo "Usage: $0 [OPTIONS]"
+  echo "Sets up the initial user configuration for $PROJECT_NAME."
+  echo ""
+  echo "Options:"
+  echo "  --force                Overwrite existing template-based files in the user config."
+  echo "  --test                 Run setup in an isolated, temporary test configuration environment."
+  echo "  --user-config-dir <path>"
+  echo "                         Specify a custom root directory for user configurations."
+  echo "                         (Default: $USER_CONFIG_DEFAULT)"
+  echo "  --help, -h             Show this help message."
+}
+
+# --- Argument Parsing ---
+while [[ $# -gt 0 ]]; do
+  arg="$1"
+  case "$arg" in
+    --force)
+      FORCE_FLAG=true
+      shift
+      ;;
+    --test)
+      RUN_TEST_FLAG=true
+      shift
+      ;;
+    --user-config-dir=*)
+      USER_CONFIG_DIR_ARG="${arg#*=}"
+      shift
+      ;;
+    --user-config-dir)
+      if [[ -n "${2:-}" && "${2}" != --* ]]; then
+        USER_CONFIG_DIR_ARG="$2"
+        shift 2
+      else
+        echo "ERROR: --user-config-dir requires a value." >&2
+        print_usage
+        exit 1
+      fi
+      ;;
+    --help|-h)
+      print_usage
+      exit 0
+      ;;
+    *)
+      echo "ERROR: Unknown option: $arg" >&2
+      print_usage
+      exit 1
+      ;;
+  esac
+done
 
 # --- Main User Setup Logic ---
-if [[ "$MODE" == "setup" || "$MODE" == "setup --force" ]]; then
-  echo "Setting up digital-heirlooms user configuration for: $IDENT"
+# The MODE variable is removed; logic now directly uses FORCE_FLAG and RUN_TEST_FLAG.
+# This section will be further refactored in subsequent themes.
+# For Theme 1, we focus on argument parsing. The actual use of USER_CONFIG_DIR_ARG
+# to set CONFIG_DIR_USER will be part of Theme 2.
+
+if [[ "$RUN_TEST_FLAG" == false ]]; then # Logic for non-test mode
+  echo "Setting up $PROJECT_NAME user configuration for: $IDENT"
+  # CONFIG_DIR_USER is still determined by the old logic for now.
+  # Theme 2 will change this to use USER_CONFIG_DIR_ARG and USER_CONFIG_DEFAULT.
   echo "User config directory: $CONFIG_DIR_USER"
 
   # Ensure core user directories exist
@@ -64,7 +118,7 @@ if [[ "$MODE" == "setup" || "$MODE" == "setup --force" ]]; then
       sed "s/$PLACEHOLDER/$IDENT/g" "$USER_ENV_SRC_TEMPLATE" >"$USER_ENV_DEST"
       if ! grep -q "^CONFIG_DIR=" "$USER_ENV_DEST"; then
         echo "" >>"$USER_ENV_DEST"
-        echo "# Path to the root of this user's Digital-Heirlooms configuration" >>"$USER_ENV_DEST"
+        echo "# Path to the root of this user's $PROJECT_NAME configuration" >>"$USER_ENV_DEST"
         echo "CONFIG_DIR=\"$CONFIG_DIR_USER\"" >>"$USER_ENV_DEST"
       fi
       echo "Wrote user env: $USER_ENV_DEST"
@@ -147,13 +201,10 @@ if [[ "$MODE" == "setup" || "$MODE" == "setup --force" ]]; then
   echo "  Repository default env symlink: $REPO_ENV_LINK_NAME -> $REPO_ENV_LINK_TARGET"
   echo "To enable your machine: $SCRIPT_DIR/bin/machine_state.sh --config \"$CONFIG_DIR_USER\" enable $IDENT"
   echo "To enable hooks, symlink from $USER_HOOKS_AVAIL_DIR to $USER_HOOKS_ENABLED_DIR"
-fi
 
-# --- Optional Test Run ---
-
-if [[ "$RUN_TEST_FLAG" == true ]]; then
+elif [[ "$RUN_TEST_FLAG" == true ]]; then # Test mode logic
   echo ""
-  echo "Running Digital-Heirlooms Test..."
+  echo "Running $PROJECT_NAME Test..."
 
   # Test specific paths
   TEST_DIR="$SCRIPT_DIR/test"
@@ -186,7 +237,7 @@ if [[ "$RUN_TEST_FLAG" == true ]]; then
 
   echo "Creating test environment file: $TEST_ENV_FILE"
   cat >"$TEST_ENV_FILE" <<EOF
-# Test Environment for Digital-Heirlooms (auto-generated by setup --test)
+# Test Environment for $PROJECT_NAME (auto-generated by setup --test)
 LOCAL_TARGET_BASE="$TEST_TARGET_OUT"
 REMOTE_TARGET_BASE=""
 LOCAL_ARCHIVE_BASE="$TEST_ARCHIVE_OUT"
@@ -206,7 +257,7 @@ EOF
   TEST_MACHINE_FPATH="$TEST_MACHINES_AVAIL_DIR/$(basename "$TEST_MACHINE_NAME")"
   echo "Creating test machine config: $TEST_MACHINE_FPATH (with excludes enabled)"
   cat >"$TEST_MACHINE_FPATH" <<EOF
-# Test machine configuration for Digital-Heirlooms ($TEST_MACHINE_NAME)
+# Test machine configuration for $PROJECT_NAME ($TEST_MACHINE_NAME)
 # This file is auto-generated by setup --test
 [$TEST_MACHINE_NAME]
 src=$TEST_SRC_DATA/dirA
@@ -242,9 +293,10 @@ EOF
   fi
 
   echo ""
-  echo "Digital-Heirlooms Test complete."
+  echo "$PROJECT_NAME Test complete."
   echo "Output files should be in: $TEST_TARGET_OUT"
   echo "Archives (if any) should be in: $TEST_ARCHIVE_OUT"
   echo "Configuration used for test: $TEST_CFG_ROOT"
-  echo "This test did NOT affect your user configuration in $CONFIG_DIR_USER"
+  # The original CONFIG_DIR_USER determination logic is still in place for this informational message for now
+  echo "This test did NOT affect your user configuration in $CONFIG_DIR_USER (unless it was overridden by env var $USER_CONFIG_OVERRIDE_VAR_NAME)"
 fi
