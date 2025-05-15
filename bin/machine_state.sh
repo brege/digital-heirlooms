@@ -10,9 +10,9 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CONFIG_ROOT_DEFAULT="$REPO_ROOT/config"
 
 # --- Argument Storage ---
-ACTION="" # Was ACTION_CAPTURED, reverting to original name's intent
-MACHINE_NAMES=() # Was MACHINE_NAMES_CAPTURED
-config_arg=""   # Was CONFIG_DIR_ARG, now shorter and lowercase
+ACTION=""
+MACHINE_NAMES=()
+config_arg=""   # Stores value from --config
 
 print_usage() {
   echo "Usage: $0 [OPTIONS] <action> <machine_name> [machine_name...]"
@@ -32,7 +32,7 @@ print_usage() {
 
 # --- Argument Parsing for Options ---
 while [[ $# -gt 0 ]]; do
-  current_arg="$1" # Using a more common name for the loop variable
+  current_arg="$1"
   case "$current_arg" in
     --config=*)
       config_arg="${current_arg#*=}"
@@ -63,50 +63,42 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-# --- Config Directory Resolution (Preserving Original Logic with New Arg Parser) ---
-CONFIG_ROOT="$CONFIG_ROOT_DEFAULT" # Default to script-relative config
+# --- Config Directory Resolution ---
+# This block correctly uses config_arg (from --config flag) if provided,
+# or defaults, and then applies original logic of sourcing backup.env.
+# This fulfills Theme 2 requirements for this script.
+CONFIG_ROOT="$CONFIG_ROOT_DEFAULT"
 
 if [[ -n "$config_arg" ]]; then
-  # If --config was used, it takes highest precedence.
-  if ! config_root_realpath="$(realpath "$config_arg" 2>/dev/null)"; then # Shorter temp var
+  if ! config_root_realpath="$(realpath "$config_arg" 2>/dev/null)"; then
       echo "ERROR: Invalid path specified with --config: $config_arg" >&2
       exit 1
   fi
   CONFIG_ROOT="$config_root_realpath"
 else
-  # If --config was NOT used, attempt to source backup.env from default location
-  # This preserves the original script's behavior.
-  # Using original variable name "ENV_FILE_TO_SOURCE"
   ENV_FILE_TO_SOURCE="$CONFIG_ROOT_DEFAULT/backup.env"
   if [[ -f "$ENV_FILE_TO_SOURCE" ]]; then
-    # shellcheck disable=SC1090
-    # Using original variable name "prev_cfg_dir_val" and its exact original definition
     prev_cfg_dir_val="${CONFIG_DIR:-}" 
-    
-    # Sourcing carefully to get CONFIG_DIR value IF SET BY THE SOURCED FILE
-    # Using a more concise variable "sourced_cfg_dir"
     sourced_cfg_dir=$(CONFIG_DIR="" source "$ENV_FILE_TO_SOURCE" >/dev/null 2>&1 && echo "$CONFIG_DIR")
 
     if [[ -n "$sourced_cfg_dir" ]]; then
-        # If backup.env defined CONFIG_DIR, use it.
-        if ! sourced_cfg_dir_realpath="$(realpath "$sourced_cfg_dir" 2>/dev/null)"; then # Shorter temp var
+        if ! sourced_cfg_dir_realpath="$(realpath "$sourced_cfg_dir" 2>/dev/null)"; then
             echo "ERROR: Invalid CONFIG_DIR specified in $ENV_FILE_TO_SOURCE: $sourced_cfg_dir" >&2
             exit 1
         fi
         CONFIG_ROOT="$sourced_cfg_dir_realpath"
     fi
-    # Restoring CONFIG_DIR variable to its state before sourcing, as in the original script
     CONFIG_DIR="${prev_cfg_dir_val}" 
   fi
 fi
 
 # --- Positional Argument Processing (Action and Machine Names) ---
 if [[ $# -gt 0 ]]; then
-  ACTION="$1" # Use original variable name
+  ACTION="$1"
   shift
-  MACHINE_NAMES=("$@") # Use concise name
+  MACHINE_NAMES=("$@")
 else
-  if [[ -z "$ACTION" ]]; then # ACTION would be empty if only options were passed
+  if [[ -z "$ACTION" ]]; then
       echo "ERROR: No action specified." >&2
       print_usage
       exit 1
@@ -128,7 +120,7 @@ fi
 
 # --- Define Paths Relative to Final CONFIG_ROOT ---
 MACHINES_ENABLED_DIR="$CONFIG_ROOT/machines-enabled"
-AVAILABLE_DIR="$CONFIG_ROOT/machines-available" # Original name from input script
+AVAILABLE_DIR="$CONFIG_ROOT/machines-available"
 
 # --- Enable/Disable Machines ---
 echo "Using configuration root: $CONFIG_ROOT"

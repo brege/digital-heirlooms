@@ -5,13 +5,16 @@ set -euo pipefail
 # --- Project Configuration ---
 PROJECT_NAME="digital-heirlooms"
 
-# --- Default User Configuration (for print_usage context in Theme 1) ---
-# This will be used more actively in Theme 2.
+# --- Default User Configuration & Paths ---
 USER_CONFIG_DEFAULT="$HOME/.config/$PROJECT_NAME"
+ENV_FILES_SUBDIR="env" # Standard subdirectory for environment files
+
+# This variable will hold the determined configuration directory
+EFFECTIVE_CONFIG_DIR="" # Will be set after argument parsing
 
 # --- Argument Storage ---
 ENV_ARG_CAPTURED=""
-CONFIG_DIR_ARG="" # To store value from --config-dir
+CONFIG_DIR_ARG="" # Stores value from --config-dir
 
 print_usage() {
   echo "Usage: $0 [OPTIONS] <env_file_name_or_path>"
@@ -35,7 +38,7 @@ print_usage() {
   echo "  $0 --config-dir /mnt/myconfigs/$PROJECT_NAME special_setup.env"
 }
 
-# --- Argument Parsing ---
+# --- Argument Parsing (from Theme 1) ---
 while [[ $# -gt 0 ]]; do
   arg="$1"
   case "$arg" in
@@ -82,9 +85,19 @@ if [[ -z "$ENV_ARG_CAPTURED" ]]; then
   exit 1
 fi
 
+# --- Determine Effective Configuration Directory (Theme 2 Core) ---
+if [[ -n "$CONFIG_DIR_ARG" ]]; then
+  EFFECTIVE_CONFIG_DIR="$CONFIG_DIR_ARG"
+else
+  EFFECTIVE_CONFIG_DIR="$USER_CONFIG_DEFAULT"
+fi
+# Note: Validation of this path (realpath, dir check) occurs in Theme 3 (Step UE2).
+# Usage of this path for ENV_PATH and TARGET_LINK occurs in Theme 4 (Step UE3).
+
+# The following logic for ENV_PATH and TARGET_LINK remains unchanged from Theme 1.
+# It does NOT yet use EFFECTIVE_CONFIG_DIR. This is intentional for this theme.
+
 # Determine full path
-# Note: This path resolution logic will be updated in Theme 3 to use CONFIG_DIR_ARG
-# For Theme 1, it uses ENV_ARG_CAPTURED instead of the original ENV_ARG.
 ENV_PATH=""
 if [[ "$ENV_ARG_CAPTURED" = /* ]]; then
   # Absolute path
@@ -94,13 +107,11 @@ elif [[ "$ENV_ARG_CAPTURED" == */* ]]; then
   ENV_PATH="$(realpath "$ENV_ARG_CAPTURED")"
 else
   # Just a filename — assume it lives in ../config/env relative to script dir (old logic)
-  # This will be updated in Theme 3.
   SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
   ENV_PATH="$(realpath "$SCRIPT_DIR/../config/env/$ENV_ARG_CAPTURED")"
 fi
 
 # Target symlink location
-# Note: This path will be updated in Theme 3 to use CONFIG_DIR_ARG
 TARGET_LINK="$(cd "$(dirname "${BASH_SOURCE[0]}")/../config" && pwd)/backup.env"
 
 if [[ ! -f "$ENV_PATH" ]]; then
@@ -110,3 +121,5 @@ fi
 
 ln -sf "$ENV_PATH" "$TARGET_LINK"
 echo "Linked $TARGET_LINK -> $ENV_PATH"
+# An echo statement confirming EFFECTIVE_CONFIG_DIR could be added here or after validation in Theme 3.
+# For now, keeping changes minimal to just setting the variable.

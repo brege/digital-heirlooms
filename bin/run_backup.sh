@@ -97,6 +97,9 @@ if [[ -f "$ENV_FILE_TO_SOURCE" ]]; then
   if [[ "$cfg_override_set" == true ]]; then
       CONFIG_DIR="${prev_cfg_dir_val}"
   elif [[ -n "${CONFIG_DIR:-}" ]]; then
+      # If --config was NOT used, and the sourced env file SETS CONFIG_DIR,
+      # and that CONFIG_DIR points to a different place than the current CONFIG_ROOT,
+      # then update CONFIG_ROOT to this new CONFIG_DIR from the user's primary env file.
       if ! new_config_root_realpath="$(realpath "${CONFIG_DIR}" 2>/dev/null)"; then
           echo "ERROR: Invalid CONFIG_DIR specified in $ENV_FILE_TO_SOURCE: ${CONFIG_DIR}" >&2
           exit 1

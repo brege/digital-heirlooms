@@ -8,39 +8,41 @@ PROJECT_NAME="digital-heirlooms"
 
 # --- Script and User Configuration Paths ---
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-# USER_CONFIG_DEFAULT is defined here primarily for print_usage in Theme 1.
-# Its full role in setting the effective config path will be handled in Theme 2.
 USER_CONFIG_DEFAULT="$HOME/.config/$PROJECT_NAME"
-# The following variables will be re-evaluated or replaced in subsequent themes
-# as the config directory logic becomes more robust.
-USER_CONFIG_OVERRIDE_VAR_NAME="CONFIG_DIR_USER_OVERRIDE"
-CONFIG_DIR_USER="${!USER_CONFIG_OVERRIDE_VAR_NAME:-$USER_CONFIG_DEFAULT}"
 
+# EFFECTIVE_USER_CFG_ROOT will be determined after argument parsing
+EFFECTIVE_USER_CFG_ROOT="" # Will be set after parsing
+
+# Variables for identifying user and host
 USER_NAME="$(whoami)"
 HOST_NAME="$(hostname -s)"
 IDENT="${USER_NAME}@${HOST_NAME}"
-
 PLACEHOLDER="__user__@__hostname__"
 
-# Paths for user configuration files and templates (to be reviewed in later themes)
+# Path definitions will now depend on EFFECTIVE_USER_CFG_ROOT.
+# Declaring related source/template paths here.
+# Destination paths will be defined after EFFECTIVE_USER_CFG_ROOT is set.
 USER_ENV_SRC_TEMPLATE="$SCRIPT_DIR/config/env/${PLACEHOLDER}_.env.template"
-USER_ENV_DEST="$CONFIG_DIR_USER/env/${IDENT}_.env"
 USER_EXCLUDES_SRC_TEMPLATE="$SCRIPT_DIR/config/excludes/${PLACEHOLDER}"
-USER_EXCLUDES_DEST="$CONFIG_DIR_USER/excludes/${IDENT}"
 USER_MACHINE_SRC_TEMPLATE="$SCRIPT_DIR/config/machines-available/${PLACEHOLDER}"
-USER_MACHINE_DEST="$CONFIG_DIR_USER/machines-available/${IDENT}"
 REPO_DEFAULT_EXCLUDE_SRC="$SCRIPT_DIR/config/excludes/default.exclude"
-USER_DEFAULT_EXCLUDE_DEST="$CONFIG_DIR_USER/excludes/default.exclude"
-REPO_ENV_LINK_TARGET="$USER_ENV_DEST"
-REPO_ENV_LINK_NAME="$SCRIPT_DIR/config/backup.env"
+REPO_ENV_LINK_NAME="$SCRIPT_DIR/config/backup.env" # Target of this link will be updated later
 REPO_HOOKS_DIR="$SCRIPT_DIR/config/hooks"
-USER_HOOKS_AVAIL_DIR="$CONFIG_DIR_USER/hooks-available"
-USER_HOOKS_ENABLED_DIR="$CONFIG_DIR_USER/hooks-enabled"
+
+# These will be fully defined after EFFECTIVE_USER_CFG_ROOT is known
+USER_ENV_DEST=""
+USER_EXCLUDES_DEST=""
+USER_MACHINE_DEST=""
+USER_DEFAULT_EXCLUDE_DEST=""
+REPO_ENV_LINK_TARGET=""
+USER_HOOKS_AVAIL_DIR=""
+USER_HOOKS_ENABLED_DIR=""
+
 
 # --- Flags ---
 FORCE_FLAG=false
 RUN_TEST_FLAG=false
-USER_CONFIG_DIR_ARG="" # To store value from --user-config-dir
+USER_CONFIG_DIR_ARG="" # Stores value from --user-config-dir
 
 print_usage() {
   echo "Usage: $0 [OPTIONS]"
@@ -55,7 +57,7 @@ print_usage() {
   echo "  --help, -h             Show this help message."
 }
 
-# --- Argument Parsing ---
+# --- Argument Parsing (from Theme 1) ---
 while [[ $# -gt 0 ]]; do
   arg="$1"
   case "$arg" in
@@ -93,34 +95,54 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+# --- Determine Effective User Configuration Root (Theme 2 Core) ---
+if [[ -n "$USER_CONFIG_DIR_ARG" ]]; then
+  EFFECTIVE_USER_CFG_ROOT="$USER_CONFIG_DIR_ARG"
+else
+  EFFECTIVE_USER_CFG_ROOT="$USER_CONFIG_DEFAULT"
+fi
+# The old USER_CONFIG_OVERRIDE_VAR_NAME and CONFIG_DIR_USER logic (from original script) is now removed.
+
+# --- Define User-Specific Destination Paths (Theme 2, using EFFECTIVE_USER_CFG_ROOT) ---
+USER_ENV_DEST="$EFFECTIVE_USER_CFG_ROOT/env/${IDENT}_.env"
+USER_EXCLUDES_DEST="$EFFECTIVE_USER_CFG_ROOT/excludes/${IDENT}" # Note: .exclude extension comes in a later theme (Setup Refactor Step 3 / Global Theme 4)
+USER_MACHINE_DEST="$EFFECTIVE_USER_CFG_ROOT/machines-available/${IDENT}"
+USER_DEFAULT_EXCLUDE_DEST="$EFFECTIVE_USER_CFG_ROOT/excludes/default.exclude"
+REPO_ENV_LINK_TARGET="$USER_ENV_DEST" # This symlink target logic will be refined in Setup Refactor Step 4 / Global Theme 5
+USER_HOOKS_AVAIL_DIR="$EFFECTIVE_USER_CFG_ROOT/hooks-available"
+USER_HOOKS_ENABLED_DIR="$EFFECTIVE_USER_CFG_ROOT/hooks-enabled"
+
+
 # --- Main User Setup Logic ---
-# The MODE variable is removed; logic now directly uses FORCE_FLAG and RUN_TEST_FLAG.
-# This section will be further refactored in subsequent themes.
-# For Theme 1, we focus on argument parsing. The actual use of USER_CONFIG_DIR_ARG
-# to set CONFIG_DIR_USER will be part of Theme 2.
+# Test mode logic (RUN_TEST_FLAG == true) is not yet updated to use EFFECTIVE_USER_CFG_ROOT for its isolated path.
+# That change (Isolate Test Mode Configuration) is part of Theme 3 for setup.sh.
+# For Theme 2, we focus on the non-test mode path using EFFECTIVE_USER_CFG_ROOT.
 
 if [[ "$RUN_TEST_FLAG" == false ]]; then # Logic for non-test mode
   echo "Setting up $PROJECT_NAME user configuration for: $IDENT"
-  # CONFIG_DIR_USER is still determined by the old logic for now.
-  # Theme 2 will change this to use USER_CONFIG_DIR_ARG and USER_CONFIG_DEFAULT.
-  echo "User config directory: $CONFIG_DIR_USER"
+  echo "User config directory: $EFFECTIVE_USER_CFG_ROOT" # Uses new variable
 
   # Ensure core user directories exist
-  mkdir -p "$CONFIG_DIR_USER/env" \
-    "$CONFIG_DIR_USER/excludes" \
-    "$CONFIG_DIR_USER/machines-available" \
+  mkdir -p "$EFFECTIVE_USER_CFG_ROOT/env" \
+    "$EFFECTIVE_USER_CFG_ROOT/excludes" \
+    "$EFFECTIVE_USER_CFG_ROOT/machines-available" \
     "$USER_HOOKS_AVAIL_DIR" \
     "$USER_HOOKS_ENABLED_DIR"
 
   # Create user environment file
   if [[ "$FORCE_FLAG" = true || ! -f "$USER_ENV_DEST" ]]; then
     if [[ -f "$USER_ENV_SRC_TEMPLATE" ]]; then
-      sed "s/$PLACEHOLDER/$IDENT/g" "$USER_ENV_SRC_TEMPLATE" >"$USER_ENV_DEST"
-      if ! grep -q "^CONFIG_DIR=" "$USER_ENV_DEST"; then
-        echo "" >>"$USER_ENV_DEST"
-        echo "# Path to the root of this user's $PROJECT_NAME configuration" >>"$USER_ENV_DEST"
-        echo "CONFIG_DIR=\"$CONFIG_DIR_USER\"" >>"$USER_ENV_DEST"
+      # Ensure CONFIG_DIR in the template is correctly set to EFFECTIVE_USER_CFG_ROOT
+      temp_env_file=$(mktemp)
+      sed "s/$PLACEHOLDER/$IDENT/g" "$USER_ENV_SRC_TEMPLATE" > "$temp_env_file"
+      if grep -q "^CONFIG_DIR=" "$temp_env_file"; then
+        sed -i "s|^CONFIG_DIR=.*|CONFIG_DIR=\"$EFFECTIVE_USER_CFG_ROOT\"|" "$temp_env_file"
+      else
+        echo "" >>"$temp_env_file"
+        echo "# Path to the root of this user's $PROJECT_NAME configuration" >>"$temp_env_file"
+        echo "CONFIG_DIR=\"$EFFECTIVE_USER_CFG_ROOT\"" >>"$temp_env_file"
       fi
+      mv "$temp_env_file" "$USER_ENV_DEST"
       echo "Wrote user env: $USER_ENV_DEST"
     else
       echo "WARN: User env template not found: $USER_ENV_SRC_TEMPLATE. Cannot create $USER_ENV_DEST." >&2
@@ -135,7 +157,8 @@ if [[ "$RUN_TEST_FLAG" == false ]]; then # Logic for non-test mode
       sed "s/$PLACEHOLDER/$IDENT/g" "$USER_EXCLUDES_SRC_TEMPLATE" >"$USER_EXCLUDES_DEST"
       echo "Wrote user excludes: $USER_EXCLUDES_DEST"
     else
-      touch "$USER_EXCLUDES_DEST"
+      # Create empty file if template not found, with a comment
+      echo "# User specific excludes for $IDENT - please add patterns here" > "$USER_EXCLUDES_DEST"
       echo "Created empty user excludes: $USER_EXCLUDES_DEST (template $USER_EXCLUDES_SRC_TEMPLATE not found)"
     fi
   else
@@ -147,13 +170,13 @@ if [[ "$RUN_TEST_FLAG" == false ]]; then # Logic for non-test mode
     if [[ -f "$USER_MACHINE_SRC_TEMPLATE" ]]; then
       sed -e "s/$PLACEHOLDER/$IDENT/g" \
         -e "s|^src=.*# TODO: Edit this.*|src=/home/$USER_NAME # TODO: Please edit this path to your actual data source|" \
-        -e "s|exclude-from=.*__hostname__/excludes/$PLACEHOLDER|exclude-from=$CONFIG_DIR_USER/excludes/$IDENT|" \
+        -e "s|exclude-from=.*|exclude-from=$EFFECTIVE_USER_CFG_ROOT/excludes/$IDENT|" \
         "$USER_MACHINE_SRC_TEMPLATE" >"$USER_MACHINE_DEST"
       echo "Wrote user machine config: $USER_MACHINE_DEST"
     else
       echo "[$IDENT]" >"$USER_MACHINE_DEST"
       echo "src=/home/$USER_NAME # TODO: Change this to the actual path you want to back up" >>"$USER_MACHINE_DEST"
-      echo "exclude-from=$CONFIG_DIR_USER/excludes/$IDENT" >>"$USER_MACHINE_DEST"
+      echo "exclude-from=$EFFECTIVE_USER_CFG_ROOT/excludes/$IDENT" >>"$USER_MACHINE_DEST"
       echo "Created placeholder user machine config: $USER_MACHINE_DEST (template $USER_MACHINE_SRC_TEMPLATE not found)"
     fi
     echo "Action required: Please review and edit $USER_MACHINE_DEST with actual paths to back up."
@@ -176,6 +199,7 @@ if [[ "$RUN_TEST_FLAG" == false ]]; then # Logic for non-test mode
   # Copy repository hooks to user's available hooks directory
   if [[ "$FORCE_FLAG" = true || ! -d "$USER_HOOKS_AVAIL_DIR" || -z "$(ls -A "$USER_HOOKS_AVAIL_DIR" 2>/dev/null)" ]]; then
     if [[ -d "$REPO_HOOKS_DIR" ]]; then
+      mkdir -p "$USER_HOOKS_AVAIL_DIR" # Ensure target directory exists
       cp -a "$REPO_HOOKS_DIR/." "$USER_HOOKS_AVAIL_DIR/"
       echo "Copied repository hooks to user's: $USER_HOOKS_AVAIL_DIR"
     else
@@ -186,6 +210,7 @@ if [[ "$RUN_TEST_FLAG" == false ]]; then # Logic for non-test mode
   fi
 
   # Link repository's backup.env to user's main environment file
+  # This specific symlink logic is due for a more significant overhaul in Theme 5 (Setup Refactor Step 4)
   if [[ -f "$USER_ENV_DEST" ]]; then
     ln -sf "$REPO_ENV_LINK_TARGET" "$REPO_ENV_LINK_NAME"
     echo "Linked repository's default $REPO_ENV_LINK_NAME -> $REPO_ENV_LINK_TARGET"
@@ -196,19 +221,22 @@ if [[ "$RUN_TEST_FLAG" == false ]]; then # Logic for non-test mode
 
   # Final summary messages
   echo "User setup complete. Summary:"
-  echo "  User configuration root: $CONFIG_DIR_USER"
+  echo "  User configuration root: $EFFECTIVE_USER_CFG_ROOT"
   echo "  Primary environment file: $USER_ENV_DEST"
   echo "  Repository default env symlink: $REPO_ENV_LINK_NAME -> $REPO_ENV_LINK_TARGET"
-  echo "To enable your machine: $SCRIPT_DIR/bin/machine_state.sh --config \"$CONFIG_DIR_USER\" enable $IDENT"
+  echo "To enable your machine: $SCRIPT_DIR/bin/machine_state.sh --config \"$EFFECTIVE_USER_CFG_ROOT\" enable $IDENT"
   echo "To enable hooks, symlink from $USER_HOOKS_AVAIL_DIR to $USER_HOOKS_ENABLED_DIR"
 
 elif [[ "$RUN_TEST_FLAG" == true ]]; then # Test mode logic
+  # Note: Test mode logic is largely unchanged by Theme 2.
+  # It will be significantly refactored in Theme 3 for setup.sh to use
+  # a redirected EFFECTIVE_USER_CFG_ROOT.
+  # For now, just a minimal update to ensure its own CONFIG_DIR points correctly.
   echo ""
   echo "Running $PROJECT_NAME Test..."
 
-  # Test specific paths
   TEST_DIR="$SCRIPT_DIR/test"
-  TEST_CFG_ROOT="$TEST_DIR/test_config_root"
+  TEST_CFG_ROOT="$TEST_DIR/test_config_root" 
   TEST_ENV_FILE="$TEST_CFG_ROOT/backup.env"
   TEST_SRC_DATA="$TEST_DIR/source"
   TEST_TARGET_OUT="$TEST_DIR/target"
@@ -243,6 +271,7 @@ REMOTE_TARGET_BASE=""
 LOCAL_ARCHIVE_BASE="$TEST_ARCHIVE_OUT"
 REMOTE_ARCHIVE_BASE=""
 DRY_RUN="false"
+CONFIG_DIR="$TEST_CFG_ROOT" # Ensure test env points to its own config root
 EOF
 
   TEST_MACHINE_EXCLUDE_FNAME="$(basename "$TEST_MACHINE_NAME").exclude"
@@ -297,6 +326,5 @@ EOF
   echo "Output files should be in: $TEST_TARGET_OUT"
   echo "Archives (if any) should be in: $TEST_ARCHIVE_OUT"
   echo "Configuration used for test: $TEST_CFG_ROOT"
-  # The original CONFIG_DIR_USER determination logic is still in place for this informational message for now
-  echo "This test did NOT affect your user configuration in $CONFIG_DIR_USER (unless it was overridden by env var $USER_CONFIG_OVERRIDE_VAR_NAME)"
+  echo "This test did NOT affect your main user configuration in $USER_CONFIG_DEFAULT (unless --user-config-dir pointed there)"
 fi
