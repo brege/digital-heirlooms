@@ -27,17 +27,19 @@ _list_machines_from_dir() {
   local dir_to_list="$1"
   local description="$2"
   local found_any=false
-
+  
   if [[ ! -d "$dir_to_list" ]]; then
-    echo "INFO: Directory for $description ('$dir_to_list') does not exist."
+    echo "INFO: Directory for $description ('$dir_to_list') not found or is not a directory."
     return
   fi
   
-  echo "$description from '$dir_to_list':"
   local item
   for item in "$dir_to_list"/* "$dir_to_list"/.*; do 
     if [[ -e "$item" || -L "$item" ]] && [[ "$(basename "$item")" != "." && "$(basename "$item")" != ".." ]]; then 
-      found_any=true
+      if [[ "$found_any" == false ]]; then 
+        echo "$description from '$dir_to_list':"
+        found_any=true
+      fi
       local display_item
       display_item="$(basename "$item")" 
 
@@ -54,25 +56,25 @@ _list_machines_from_dir() {
   done
 
   if [[ "$found_any" == false ]]; then
-    echo "  (No machines $description)"
+    echo "INFO: No machines $description found in '$dir_to_list'."
   fi
 }
 
 # --- Action Helper: List Available Machines ---
 list_available_machines() {
-  _list_machines_from_dir "$MACHINES_AVAIL_DIR" "Available machines"
+  _list_machines_from_dir "$MACHINES_AVAIL_DIR" "Available machine configurations"
 }
 
 # --- Action Helper: List Enabled Machines ---
 list_enabled_machines() {
-  _list_machines_from_dir "$MACHINES_ENABLED_DIR" "Enabled machines (symlinks)"
+  _list_machines_from_dir "$MACHINES_ENABLED_DIR" "Enabled machine configurations (symlinks)"
 }
 
 # --- Action Helper: Show Status of All Available Machines ---
 show_machine_status() {
-  echo "Machine Status (Config Root: $CONFIG_ROOT):"
+  echo "Machine Status (Configuration Root: $CONFIG_ROOT):"
   if [[ ! -d "$MACHINES_AVAIL_DIR" ]]; then
-    echo "  INFO: Directory for available machines ('$MACHINES_AVAIL_DIR') does not exist."
+    echo "  INFO: Directory for available machines ('$MACHINES_AVAIL_DIR') not found or is not a directory."
     return
   fi
 
@@ -85,7 +87,7 @@ show_machine_status() {
     found_any_available=true
     local machine_name
     machine_name="$(basename "$machine_file")"
-    local status="Not Enabled"
+    local status_detail="Not Enabled" 
     local target_link="$MACHINES_ENABLED_DIR/$machine_name" 
 
     if [[ -L "$target_link" ]]; then 
@@ -94,27 +96,27 @@ show_machine_status() {
       
       local expected_source_path 
       expected_source_path_tmp=""
-      if ! expected_source_path_tmp="$(realpath "$machine_file" 2>/dev/null)"; then
+      if ! expected_source_path_tmp="$(realpath -m "$machine_file" 2>/dev/null)"; then
           expected_source_path="<error resolving path for $machine_file>"
       else
           expected_source_path="$expected_source_path_tmp"
       fi
 
-      if [[ "$real_source_path" == "$expected_source_path" ]]; then
-        status="Enabled"
+      if [[ "$(realpath -m "$real_source_path" 2>/dev/null)" == "$expected_source_path" ]]; then
+        status_detail="Enabled (links to '$real_source_path')"
       elif [[ -e "$target_link" ]]; then 
-        status="Enabled (Warning: Symlink points to '$real_source_path', expected '$expected_source_path')"
+        status_detail="Enabled (Warning: Symlink points to '$real_source_path', expected '$expected_source_path')"
       else 
-        status="Enabled (Error: Symlink is BROKEN, points to '$real_source_path')"
+        status_detail="Enabled (Error: Symlink is BROKEN, points to '$real_source_path')"
       fi
     elif [[ -e "$target_link" ]]; then 
-      status="Not Enabled (Conflict: Item '$target_link' exists but is not a symlink)"
+      status_detail="Not Enabled (Conflict: Item '$target_link' exists but is not a symlink)"
     fi
-    echo "  $machine_name: $status"
+    printf "  %-30s : %s\n" "$machine_name" "$status_detail"
   done
 
   if [[ "$found_any_available" == false ]]; then
-    echo "  (No machines found in $MACHINES_AVAIL_DIR to check status for)"
+    echo "  (No machine configurations found in '$MACHINES_AVAIL_DIR' to check status for)"
   fi
 }
 
@@ -123,16 +125,19 @@ print_usage() {
   echo "Usage: $0 [OPTIONS] <action> [machine_name...]"
   echo ""
   echo "Manages symlinks for machine configurations for $PROJECT_NAME."
+  echo "Symlinks are created in the 'machines-enabled' directory, pointing to files"
+  echo "in the 'machines-available' directory within the effective configuration root."
   echo ""
   echo "Actions:"
-  echo "  enable <machine...>    Enable the specified machine(s) for backup."
-  echo "  disable <machine...>   Disable the specified machine(s) for backup."
-  echo "  list-available         List all machines in the 'machines-available' directory."
-  echo "  list-enabled           List all currently enabled machines (symlinks)."
-  echo "  status | list          Show the enablement status of all available machines."
+  echo "  enable <machine...>    Enables the specified machine(s) by creating symlinks."
+  echo "  disable <machine...>   Disables the specified machine(s) by removing symlinks."
+  echo "  list-available         Lists all machine configurations found in 'machines-available'."
+  echo "  list-enabled           Lists all currently enabled machine configurations (symlinks)."
+  echo "  status | list          Shows the enablement status of all available machine configurations."
   echo ""
   echo "Options:"
   echo "  --config <path>        Specify the root directory for $PROJECT_NAME configurations."
+  echo "                         This directory should contain 'machines-available' and 'machines-enabled'."
   echo "                         Overrides default discovery logic."
   echo "  --help, -h             Show this help message."
   echo ""
@@ -181,8 +186,7 @@ if [[ $# -gt 0 ]]; then
   MACHINE_NAMES=("$@") 
 else
   if [[ -z "$ACTION" ]]; then 
-      echo "ERROR: No action specified." >&2
-      print_usage
+      echo "ERROR: No action specified. Use '$0 --help' for details." >&2
       exit 1
   fi
 fi
@@ -191,8 +195,7 @@ fi
 case "$ACTION" in
   enable|disable)
     if [[ ${#MACHINE_NAMES[@]} -eq 0 ]]; then
-      echo "ERROR: Action '$ACTION' requires at least one machine name." >&2
-      print_usage
+      echo "ERROR: Action '$ACTION' requires at least one machine name. Use '$0 --help' for details." >&2
       exit 1
     fi
     ;;
@@ -203,8 +206,7 @@ case "$ACTION" in
     fi
     ;;
   *)
-    echo "ERROR: Invalid action '$ACTION'." >&2
-    print_usage
+    echo "ERROR: Invalid action '$ACTION'. Use '$0 --help' for available actions." >&2
     exit 1
     ;;
 esac
@@ -224,7 +226,7 @@ _try_set_config_root() {
     return 1
   fi
   if [[ ! -f "$temp_realpath/backup.env" ]]; then
-    echo "WARN: $description: Directory '$temp_realpath' does not contain a 'backup.env' file. Ignoring." >&2
+    echo "WARN: $description: Directory '$temp_realpath' does not contain a 'backup.env' file. Ignoring this as a primary config root." >&2
     return 1
   fi
   CONFIG_CANDIDATE_REALPATH="$temp_realpath"
@@ -244,14 +246,14 @@ if [[ -n "$config_arg" ]]; then
   fi
   if [[ ! -f "$cfg_realpath_tmp/backup.env" ]]; then
     echo "WARN: Directory specified with --config ('$cfg_realpath_tmp') does not contain a 'backup.env' file." >&2
-    echo "      Proceeding, but essential configuration variables might be missing." >&2
+    echo "      Proceeding, but some features or other scripts might expect it for full discovery." >&2
   fi
   CONFIG_ROOT="$cfg_realpath_tmp"
 fi
 
 if [[ -z "$CONFIG_ROOT" ]]; then
   if [[ -f "$USER_HOME_ENV_FILE" ]]; then 
-    sourced_cfg_dir=$(CONFIG_DIR="" source "$USER_HOME_ENV_FILE" >/dev/null 2>&1 && echo "${CONFIG_DIR:-}") # CORRECTED
+    sourced_cfg_dir=$(CONFIG_DIR="" source "$USER_HOME_ENV_FILE" >/dev/null 2>&1 && echo "${CONFIG_DIR:-}") 
     if [[ -n "$sourced_cfg_dir" ]]; then 
       echo "INFO: Found CONFIG_DIR in '$USER_HOME_ENV_FILE': '$sourced_cfg_dir'"
       if _try_set_config_root "$sourced_cfg_dir" "CONFIG_DIR from '$USER_HOME_ENV_FILE'"; then
@@ -262,7 +264,6 @@ if [[ -z "$CONFIG_ROOT" ]]; then
   if [[ -z "$CONFIG_ROOT" ]]; then 
     if _try_set_config_root "$USER_HOME_CFG_ROOT" "User standard directory '$USER_HOME_CFG_ROOT'"; then
       CONFIG_ROOT="$CONFIG_CANDIDATE_REALPATH"
-      echo "INFO: Using user's standard config directory '$CONFIG_ROOT' (backup.env present)."
     fi
   fi
 fi
@@ -270,7 +271,7 @@ fi
 if [[ -z "$CONFIG_ROOT" ]]; then
   REPO_DEFAULT_ENV_FILE="$CONFIG_ROOT_DEFAULT/backup.env"
   if [[ -f "$REPO_DEFAULT_ENV_FILE" ]]; then 
-    sourced_cfg_dir=$(CONFIG_DIR="" source "$REPO_DEFAULT_ENV_FILE" >/dev/null 2>&1 && echo "${CONFIG_DIR:-}") # CORRECTED
+    sourced_cfg_dir=$(CONFIG_DIR="" source "$REPO_DEFAULT_ENV_FILE" >/dev/null 2>&1 && echo "${CONFIG_DIR:-}") 
     if [[ -n "$sourced_cfg_dir" ]]; then 
       echo "INFO: Found CONFIG_DIR in '$REPO_DEFAULT_ENV_FILE': '$sourced_cfg_dir'"
       if _try_set_config_root "$sourced_cfg_dir" "CONFIG_DIR from '$REPO_DEFAULT_ENV_FILE'"; then
@@ -281,16 +282,13 @@ if [[ -z "$CONFIG_ROOT" ]]; then
   if [[ -z "$CONFIG_ROOT" ]]; then 
     if _try_set_config_root "$CONFIG_ROOT_DEFAULT" "Repository default directory '$CONFIG_ROOT_DEFAULT'"; then
       CONFIG_ROOT="$CONFIG_CANDIDATE_REALPATH"
-      echo "INFO: Using repository default configuration directory '$CONFIG_ROOT' (backup.env present)."
     fi
   fi
 fi
 
 if [[ -z "$CONFIG_ROOT" ]]; then
   echo "ERROR: Could not determine a valid $PROJECT_NAME configuration root directory." >&2
-  echo "       Please use the --config option or ensure a valid setup exists in:" >&2
-  echo "       1. '$USER_HOME_CFG_ROOT' (containing a 'backup.env')" >&2
-  echo "       2. '$CONFIG_ROOT_DEFAULT' (containing a 'backup.env')" >&2
+  echo "       Please use the --config option or ensure a valid setup exists (see '$0 --help' for discovery order)." >&2
   exit 1
 fi
 
@@ -306,11 +304,11 @@ MACHINES_AVAIL_DIR="$CONFIG_ROOT/machines-available"
 case "$ACTION" in
   enable)
     # --- Enable Machine(s) Logic ---
-    echo "INFO: Action: Enable Machine(s)"
+    echo "INFO: Action: Enable Machine(s)" # Restored unconditional INFO
     for machine in "${MACHINE_NAMES[@]}"; do
       machine_config_path="$MACHINES_AVAIL_DIR/$machine"
       if [[ ! -f "$machine_config_path" ]]; then
-        echo "WARN: Configuration file for '$machine' not found in $MACHINES_AVAIL_DIR. Skipping." >&2
+        echo "WARN: Configuration file for '$machine' not found in '$MACHINES_AVAIL_DIR'. Skipping." >&2
         continue
       fi
       target_link="$MACHINES_ENABLED_DIR/$machine"
@@ -323,21 +321,21 @@ case "$ACTION" in
           continue
       fi
       ln -sf "$source_cfg_file_rpath" "$target_link"
-      echo "Machine State: Enabled machine configuration for '$machine' ($target_link -> $source_cfg_file_rpath)."
+      echo "Enabled machine configuration for '$machine' ('$target_link' -> '$source_cfg_file_rpath')."
     done
     ;;
   disable)
     # --- Disable Machine(s) Logic ---
-    echo "INFO: Action: Disable Machine(s)"
+    echo "INFO: Action: Disable Machine(s)" # Restored unconditional INFO
     for machine in "${MACHINE_NAMES[@]}"; do
       target_link="$MACHINES_ENABLED_DIR/$machine"
       if [[ -L "$target_link" ]]; then 
         rm -f "$target_link"
-        echo "Machine State: Disabled machine configuration for '$machine'."
+        echo "Disabled machine configuration for '$machine'."
       elif [[ -e "$target_link" ]]; then 
         echo "WARN: '$target_link' exists but is not a symlink. Manual removal may be required." >&2
       else 
-        echo "Machine State: Configuration for '$machine' was not enabled. No action taken for 'disable'."
+        echo "INFO: Configuration for '$machine' was not enabled. No action taken for 'disable'."
       fi
     done
     ;;

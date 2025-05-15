@@ -23,7 +23,7 @@ USER_ENV_SRC_TEMPLATE="$SCRIPT_DIR/config/env/${PLACEHOLDER}_.env.template"
 USER_EXCLUDES_SRC_TEMPLATE="$SCRIPT_DIR/config/excludes/${PLACEHOLDER}"
 USER_MACHINE_SRC_TEMPLATE="$SCRIPT_DIR/config/machines-available/${PLACEHOLDER}"
 REPO_DEFAULT_EXCLUDE_SRC="$SCRIPT_DIR/config/excludes/default.exclude"
-REPO_CONFIG_DIR_FOR_SYMLINK="$SCRIPT_DIR/config" # More descriptive for its use in symlink
+REPO_CONFIG_DIR_FOR_SYMLINK="$SCRIPT_DIR/config" 
 REPO_HOOKS_DIR="$SCRIPT_DIR/config/hooks"
 
 # Destination paths
@@ -31,10 +31,9 @@ USER_ENV_DEST=""
 USER_EXCLUDES_DEST=""
 USER_MACHINE_DEST=""
 USER_DEFAULT_EXCLUDE_DEST=""
-# REPO_ENV_LINK_TARGET is no longer needed as symlink logic is more complex
 USER_HOOKS_AVAIL_DIR=""
 USER_HOOKS_ENABLED_DIR=""
-USER_MAIN_ENV_SYMLINK="" # For the user's primary backup.env symlink
+USER_MAIN_ENV_SYMLINK="" 
 
 # Test specific output directory variables
 TEST_BACKUP_TARGET_DIR=""
@@ -45,6 +44,7 @@ FORCE_FLAG=false
 RUN_TEST_FLAG=false
 USER_CONFIG_DIR_ARG=""
 
+# --- print_usage function ---
 print_usage() {
   echo "Usage: $0 [OPTIONS]"
   echo "Sets up the initial user configuration for $PROJECT_NAME."
@@ -114,30 +114,41 @@ if [[ "$RUN_TEST_FLAG" == true ]]; then
 else
   if [[ -n "$USER_CONFIG_DIR_ARG" ]]; then
     if ! cfg_realpath_tmp="$(realpath "$USER_CONFIG_DIR_ARG" 2>/dev/null)"; then
-      echo "ERROR: Invalid path specified with --user-config-dir: $USER_CONFIG_DIR_ARG" >&2
+      echo "ERROR: Invalid path specified with --user-config-dir: '$USER_CONFIG_DIR_ARG' (realpath failed)." >&2
       exit 1
     fi
     EFFECTIVE_USER_CFG_ROOT="$cfg_realpath_tmp"
   else
     EFFECTIVE_USER_CFG_ROOT="$USER_CONFIG_DEFAULT"
   fi
+  # Ensure the directory exists for non-test mode as well, if it's going to be used.
+  if ! mkdir -p "$EFFECTIVE_USER_CFG_ROOT"; then
+    echo "ERROR: Could not create or access effective user configuration root: $EFFECTIVE_USER_CFG_ROOT" >&2
+    exit 1
+  fi
+  # Convert to realpath one last time in case $USER_CONFIG_DEFAULT had relative components or needed creation
+  if ! EFFECTIVE_USER_CFG_ROOT="$(realpath "$EFFECTIVE_USER_CFG_ROOT")"; then
+      echo "ERROR: Could not resolve realpath for effective user configuration root: $EFFECTIVE_USER_CFG_ROOT (initial: ${USER_CONFIG_DIR_ARG:-$USER_CONFIG_DEFAULT})" >&2
+      exit 1
+  fi
+
 fi
 echo "INFO: Effective user configuration root set to: $EFFECTIVE_USER_CFG_ROOT"
 
 
-# --- Define User-Specific Destination Paths (using EFFECTIVE_USER_CFG_ROOT) ---
+# --- Define User-Specific Destination Paths ---
 USER_ENV_DEST="$EFFECTIVE_USER_CFG_ROOT/env/${IDENT}_default.env"
 USER_EXCLUDES_DEST="$EFFECTIVE_USER_CFG_ROOT/excludes/${IDENT}.exclude" 
 USER_MACHINE_DEST="$EFFECTIVE_USER_CFG_ROOT/machines-available/${IDENT}"
 USER_DEFAULT_EXCLUDE_DEST="$EFFECTIVE_USER_CFG_ROOT/excludes/default.exclude"
 USER_HOOKS_AVAIL_DIR="$EFFECTIVE_USER_CFG_ROOT/hooks-available"
 USER_HOOKS_ENABLED_DIR="$EFFECTIVE_USER_CFG_ROOT/hooks-enabled"
-USER_MAIN_ENV_SYMLINK="$EFFECTIVE_USER_CFG_ROOT/backup.env" # User's primary symlink
+USER_MAIN_ENV_SYMLINK="$EFFECTIVE_USER_CFG_ROOT/backup.env"
 
 
 # --- Main User Setup Logic (Non-Test Mode) ---
 if [[ "$RUN_TEST_FLAG" == false ]]; then
-  echo "Setting up $PROJECT_NAME user configuration for: $IDENT"
+  echo "Setting up $PROJECT_NAME user configuration for '$IDENT' in '$EFFECTIVE_USER_CFG_ROOT'..."
 
   mkdir -p "$EFFECTIVE_USER_CFG_ROOT/env" \
     "$EFFECTIVE_USER_CFG_ROOT/excludes" \
@@ -150,7 +161,7 @@ if [[ "$RUN_TEST_FLAG" == false ]]; then
     if [[ -f "$USER_ENV_SRC_TEMPLATE" ]]; then
       temp_env_file=$(mktemp)
       sed "s/$PLACEHOLDER/$IDENT/g" "$USER_ENV_SRC_TEMPLATE" > "$temp_env_file"
-      if grep -q "^CONFIG_DIR=" "$temp_env_file"; then
+      if grep -q -E "^CONFIG_DIR=" "$temp_env_file"; then # Ensure regex for grep if needed
         sed -i "s|^CONFIG_DIR=.*|CONFIG_DIR=\"$EFFECTIVE_USER_CFG_ROOT\"|" "$temp_env_file"
       else
         echo "" >>"$temp_env_file"
@@ -158,25 +169,25 @@ if [[ "$RUN_TEST_FLAG" == false ]]; then
         echo "CONFIG_DIR=\"$EFFECTIVE_USER_CFG_ROOT\"" >>"$temp_env_file"
       fi
       mv "$temp_env_file" "$USER_ENV_DEST"
-      echo "Wrote user env: $USER_ENV_DEST"
+      echo "Created user environment file: $USER_ENV_DEST"
     else
-      echo "WARN: User env template not found: $USER_ENV_SRC_TEMPLATE. Cannot create $USER_ENV_DEST." >&2
+      echo "WARN: User environment template not found: '$USER_ENV_SRC_TEMPLATE'. Cannot create '$USER_ENV_DEST'." >&2
     fi
   else
-    echo "Skipped: $USER_ENV_DEST already exists (use --force to overwrite)"
+    echo "Skipped: User environment file '$USER_ENV_DEST' already exists. Use --force to overwrite."
   fi
 
   # Create user excludes file (.exclude suffix)
   if [[ "$FORCE_FLAG" = true || ! -f "$USER_EXCLUDES_DEST" ]]; then
     if [[ -f "$USER_EXCLUDES_SRC_TEMPLATE" ]]; then
       sed "s/$PLACEHOLDER/$IDENT/g" "$USER_EXCLUDES_SRC_TEMPLATE" >"$USER_EXCLUDES_DEST"
-      echo "Wrote user excludes: $USER_EXCLUDES_DEST"
+      echo "Created user excludes file: $USER_EXCLUDES_DEST"
     else
       echo "# User specific excludes for $IDENT - please add patterns here" > "$USER_EXCLUDES_DEST"
-      echo "Created empty user excludes: $USER_EXCLUDES_DEST (template $USER_EXCLUDES_SRC_TEMPLATE not found)"
+      echo "Created empty user excludes file: '$USER_EXCLUDES_DEST' (template '$USER_EXCLUDES_SRC_TEMPLATE' not found)."
     fi
   else
-    echo "Skipped: $USER_EXCLUDES_DEST already exists (use --force to overwrite)"
+    echo "Skipped: User excludes file '$USER_EXCLUDES_DEST' already exists. Use --force to overwrite."
   fi
 
   # Create user machine config file
@@ -186,96 +197,116 @@ if [[ "$RUN_TEST_FLAG" == false ]]; then
         -e "s|^src=.*# TODO: Edit this.*|src=/home/$USER_NAME # TODO: Please edit this path to your actual data source|" \
         -e "s|exclude-from=.*|exclude-from=$USER_EXCLUDES_DEST|" \
         "$USER_MACHINE_SRC_TEMPLATE" >"$USER_MACHINE_DEST"
-      echo "Wrote user machine config: $USER_MACHINE_DEST"
+      echo "Created user machine config: $USER_MACHINE_DEST"
     else
       echo "[$IDENT]" >"$USER_MACHINE_DEST"
       echo "src=/home/$USER_NAME # TODO: Change this to the actual path you want to back up" >>"$USER_MACHINE_DEST"
       echo "exclude-from=$USER_EXCLUDES_DEST" >>"$USER_MACHINE_DEST"
-      echo "Created placeholder user machine config: $USER_MACHINE_DEST (template $USER_MACHINE_SRC_TEMPLATE not found)"
+      echo "Created placeholder user machine config: '$USER_MACHINE_DEST' (template '$USER_MACHINE_SRC_TEMPLATE' not found)."
     fi
-    echo "Action required: Please review and edit $USER_MACHINE_DEST with actual paths to back up."
+    echo "Action required: Please review and edit '$USER_MACHINE_DEST' with actual paths to back up."
   else
-    echo "Skipped: $USER_MACHINE_DEST already exists (use --force to overwrite)"
+    echo "Skipped: User machine config '$USER_MACHINE_DEST' already exists. Use --force to overwrite."
   fi
 
   # Copy default excludes file
   if [[ "$FORCE_FLAG" = true || ! -f "$USER_DEFAULT_EXCLUDE_DEST" ]]; then
     if [[ -f "$REPO_DEFAULT_EXCLUDE_SRC" ]]; then
       cp "$REPO_DEFAULT_EXCLUDE_SRC" "$USER_DEFAULT_EXCLUDE_DEST"
-      echo "Copied default.exclude to: $USER_DEFAULT_EXCLUDE_DEST"
+      echo "Copied default excludes to: $USER_DEFAULT_EXCLUDE_DEST"
     else
-      echo "WARN: Repository default exclude source file not found: $REPO_DEFAULT_EXCLUDE_SRC" >&2
+      echo "WARN: Repository default exclude source file not found: '$REPO_DEFAULT_EXCLUDE_SRC'." >&2
     fi
   else
-    echo "Skipped: $USER_DEFAULT_EXCLUDE_DEST already exists (use --force to overwrite)"
+    echo "Skipped: Global default excludes file '$USER_DEFAULT_EXCLUDE_DEST' already exists. Use --force to overwrite."
   fi
 
-  # --- Copy Repository Hooks to User's hooks-available (Theme 5) ---
+  # --- Copy Repository Hooks to User's hooks-available ---
   if [[ -d "$REPO_HOOKS_DIR" ]]; then
-    echo "INFO: Populating user's '$USER_HOOKS_AVAIL_DIR' with default hooks from repository..."
-    mkdir -p "$USER_HOOKS_AVAIL_DIR" # Ensure it exists
+    echo "INFO: Populating '$USER_HOOKS_AVAIL_DIR' with default hooks from repository..."
+    mkdir -p "$USER_HOOKS_AVAIL_DIR" 
     for repo_hook_file in "$REPO_HOOKS_DIR"/*; do
-      if [[ -f "$repo_hook_file" ]]; then # Process only files
+      if [[ -f "$repo_hook_file" ]]; then 
         hook_basename=$(basename "$repo_hook_file")
         user_hook_dest_path="$USER_HOOKS_AVAIL_DIR/$hook_basename"
         if [[ "$FORCE_FLAG" == true || ! -f "$user_hook_dest_path" ]]; then
           cp "$repo_hook_file" "$user_hook_dest_path"
-          chmod u+x "$user_hook_dest_path" # Make hook executable for the user
-          echo "Copied and made executable: $user_hook_dest_path"
+          chmod u+x "$user_hook_dest_path" 
+          echo "Copied and made executable hook: $user_hook_dest_path"
         else
-          echo "Skipped hook: $user_hook_dest_path already exists. Use --force to overwrite."
+          echo "Skipped hook '$user_hook_dest_path': already exists. Use --force to overwrite."
         fi
       fi
     done
   else
-    echo "WARN: Repository default hooks directory not found: $REPO_HOOKS_DIR. No default hooks copied." >&2
+    echo "WARN: Repository default hooks directory not found: '$REPO_HOOKS_DIR'. No default hooks copied." >&2
   fi
 
-  # --- Setup Main backup.env Symlink in User Config (Theme 5) ---
-  if [[ -f "$USER_ENV_DEST" ]]; then # USER_ENV_DEST is the _default.env file
+  # --- Setup Main backup.env Symlink in User Config ---
+  if [[ -f "$USER_ENV_DEST" ]]; then 
       if [[ ! -L "$USER_MAIN_ENV_SYMLINK" || "$FORCE_FLAG" == true || "$(readlink "$USER_MAIN_ENV_SYMLINK")" != "$USER_ENV_DEST" ]]; then
-          echo "INFO: Linking user's main backup.env: $USER_MAIN_ENV_SYMLINK -> $USER_ENV_DEST"
+          echo "INFO: Linking user's main backup.env: '$USER_MAIN_ENV_SYMLINK' -> '$USER_ENV_DEST'"
           ln -sf "$USER_ENV_DEST" "$USER_MAIN_ENV_SYMLINK"
       else
-          echo "INFO: User's main backup.env symlink at $USER_MAIN_ENV_SYMLINK already correctly points to $USER_ENV_DEST. Skipping."
+          echo "INFO: User's main backup.env symlink at '$USER_MAIN_ENV_SYMLINK' already correctly points to '$USER_ENV_DEST'. Skipping."
       fi
-  elif [[ ! -e "$USER_MAIN_ENV_SYMLINK" ]]; then # Only warn if main symlink also doesn't exist
-      echo "WARN: Default environment file $USER_ENV_DEST does not exist. Cannot create $USER_MAIN_ENV_SYMLINK to it." >&2
-      echo "      Please create an environment profile in '$EFFECTIVE_USER_CFG_ROOT/env/' and then use use_env.sh." >&2
+  elif [[ ! -e "$USER_MAIN_ENV_SYMLINK" ]]; then 
+      echo "WARN: Default environment file '$USER_ENV_DEST' does not exist. Cannot create symlink '$USER_MAIN_ENV_SYMLINK'." >&2
+      echo "      Please create an environment profile in '$EFFECTIVE_USER_CFG_ROOT/env/' then use '$SCRIPT_DIR/bin/use_env.sh'." >&2
   fi
 
-  # --- Setup Convenience Symlink in Repository (Theme 5) ---
-  REPO_CONVENIENCE_SYMLINK_PATH="$REPO_CONFIG_DIR_FOR_SYMLINK/backup.env" # e.g. ./config/backup.env
-  # Ensure the target for the repo convenience symlink (the user's main symlink) exists and is valid
+  # --- Setup Convenience Symlink in Repository ---
+  REPO_CONVENIENCE_SYMLINK_PATH="$REPO_CONFIG_DIR_FOR_SYMLINK/backup.env"
   if [[ -L "$USER_MAIN_ENV_SYMLINK" && -e "$(readlink "$USER_MAIN_ENV_SYMLINK")" ]]; then
-      user_main_symlink_target_realpath="$(realpath "$USER_MAIN_ENV_SYMLINK")"
+      user_main_symlink_target_realpath="$(realpath "$USER_MAIN_ENV_SYMLINK")" # Already points to $USER_ENV_DEST
       repo_config_dir_realpath="$(realpath "$REPO_CONFIG_DIR_FOR_SYMLINK")"
 
-      # Avoid creating a symlink inside repo's config dir that points to a backup.env
-      # within that very same repo config dir (e.g. if user set --user-config-dir to repo's config)
-      # The target of USER_MAIN_ENV_SYMLINK ($USER_ENV_DEST) is inside EFFECTIVE_USER_CFG_ROOT.
-      # We want to avoid REPO_CONVENIENCE_SYMLINK_PATH -> $EFFECTIVE_USER_CFG_ROOT/backup.env
-      # if $EFFECTIVE_USER_CFG_ROOT is $REPO_CONFIG_DIR_FOR_SYMLINK
-      if [[ "$(dirname "$user_main_symlink_target_realpath")" != "$repo_config_dir_realpath" ]]; then
-          echo "INFO: Updating repository convenience symlink: $REPO_CONVENIENCE_SYMLINK_PATH -> $USER_MAIN_ENV_SYMLINK"
+      # EFFECTIVE_USER_CFG_ROOT is already a realpath
+      if [[ "$EFFECTIVE_USER_CFG_ROOT" != "$repo_config_dir_realpath" ]]; then
+          echo "INFO: Updating repository convenience symlink: '$REPO_CONVENIENCE_SYMLINK_PATH' -> '$USER_MAIN_ENV_SYMLINK'"
           ln -sf "$USER_MAIN_ENV_SYMLINK" "$REPO_CONVENIENCE_SYMLINK_PATH"
       else
-          echo "INFO: User config root is the repository config directory. Skipping repo convenience symlink to avoid self-reference."
+          echo "INFO: User config root is the repository's config directory. Skipping repo convenience symlink to avoid self-reference."
       fi
   else
-      echo "WARN: User's main backup.env symlink ($USER_MAIN_ENV_SYMLINK) does not exist or is broken." >&2
-      echo "      Cannot create repository convenience symlink ($REPO_CONVENIENCE_SYMLINK_PATH)." >&2
+      echo "WARN: User's main backup.env symlink ('$USER_MAIN_ENV_SYMLINK') does not exist or is broken." >&2
+      echo "      Cannot create repository convenience symlink ('$REPO_CONVENIENCE_SYMLINK_PATH')." >&2
   fi
 
-  # Final summary messages for non-test mode
-  echo "User setup complete. Summary:"
-  echo "  User configuration root: $EFFECTIVE_USER_CFG_ROOT"
-  echo "  Primary environment file created: $USER_ENV_DEST"
-  echo "  Active environment symlink: $USER_MAIN_ENV_SYMLINK -> $(readlink -f "$USER_MAIN_ENV_SYMLINK" 2>/dev/null || echo "broken/missing")"
-  echo "  Repository convenience symlink: $REPO_CONVENIENCE_SYMLINK_PATH -> $(readlink -f "$REPO_CONVENIENCE_SYMLINK_PATH" 2>/dev/null || echo "broken/missing")"
-  echo "To enable your machine: $SCRIPT_DIR/bin/machine_state.sh --config \"$EFFECTIVE_USER_CFG_ROOT\" enable $IDENT"
-  echo "To enable hooks, symlink from $USER_HOOKS_AVAIL_DIR to $USER_HOOKS_ENABLED_DIR"
-  echo "To change active environment profile: $SCRIPT_DIR/bin/use_env.sh --config-dir \"$EFFECTIVE_USER_CFG_ROOT\" <profile_name.env>"
+  # --- Final Summary Messages (Theme 6) ---
+  echo ""
+  echo "$PROJECT_NAME user setup process complete."
+  echo "--------------------------------------------------"
+  echo "Your primary configuration root is at: $EFFECTIVE_USER_CFG_ROOT"
+  if [[ -f "$USER_ENV_DEST" ]]; then
+    echo "A default environment profile for '$IDENT' has been created at:"
+    echo "  $USER_ENV_DEST"
+    if [[ -L "$USER_MAIN_ENV_SYMLINK" ]]; then
+        echo "It has been set as the active environment via the symlink:"
+        echo "  $USER_MAIN_ENV_SYMLINK -> $(readlink -f "$USER_MAIN_ENV_SYMLINK")"
+    fi
+  else
+    echo "WARN: No default environment profile was created. You may need to create one manually in '$EFFECTIVE_USER_CFG_ROOT/env/'." >&2
+  fi
+  if [[ -L "$REPO_CONVENIENCE_SYMLINK_PATH" ]]; then
+    echo "A repository convenience symlink has also been updated:"
+    echo "  $REPO_CONVENIENCE_SYMLINK_PATH -> $(readlink -f "$REPO_CONVENIENCE_SYMLINK_PATH")"
+  fi
+  echo ""
+  echo "Next Steps:"
+  echo "1. Review and customize your default environment file: $USER_ENV_DEST"
+  if [[ -f "$USER_MACHINE_DEST" ]]; then
+    echo "2. Edit your machine configuration file with paths to back up:"
+    echo "   $USER_MACHINE_DEST"
+    echo "3. Enable this machine for backup using:"
+    echo "   $SCRIPT_DIR/bin/machine_state.sh --config \"$EFFECTIVE_USER_CFG_ROOT\" enable $IDENT"
+  fi
+  echo "4. To manage other environment profiles, use:"
+  echo "   $SCRIPT_DIR/bin/use_env.sh --config-dir \"$EFFECTIVE_USER_CFG_ROOT\" <your_profile.env>"
+  echo "5. To enable/disable optional post-backup hooks, create symlinks in:"
+  echo "   $USER_HOOKS_ENABLED_DIR"
+  echo "   (Available hooks are in: $USER_HOOKS_AVAIL_DIR)"
+  echo "--------------------------------------------------"
 
 
 # --- Optional Test Run ---
@@ -294,7 +325,7 @@ elif [[ "$RUN_TEST_FLAG" == true ]]; then
     "$EFFECTIVE_USER_CFG_ROOT/excludes" \
     "$EFFECTIVE_USER_CFG_ROOT/machines-available" \
     "$USER_HOOKS_AVAIL_DIR" \
-    "$USER_HOOKS_ENABLED_DIR" # USER_HOOKS_AVAIL_DIR/ENABLED_DIR already point to correct test subdirs
+    "$USER_HOOKS_ENABLED_DIR"
 
   echo "INFO: Test mode: Creating test environment file: $TEST_MODE_MAIN_ENV_FILE"
   cat >"$TEST_MODE_MAIN_ENV_FILE" <<EOF
@@ -328,18 +359,17 @@ EOF
 
   echo "INFO: Test mode: Setting up hooks in isolated config directory: $USER_HOOKS_AVAIL_DIR"
   if [[ -d "$REPO_HOOKS_DIR" ]]; then
-    # Copy hooks and make them executable
     for repo_hook_file in "$REPO_HOOKS_DIR"/*; do
       if [[ -f "$repo_hook_file" ]]; then
         hook_basename=$(basename "$repo_hook_file")
-        user_hook_dest_path="$USER_HOOKS_AVAIL_DIR/$hook_basename" # USER_HOOKS_AVAIL_DIR is already the test one
+        user_hook_dest_path="$USER_HOOKS_AVAIL_DIR/$hook_basename"
         cp "$repo_hook_file" "$user_hook_dest_path"
         chmod u+x "$user_hook_dest_path"
       fi
     done
     echo "INFO: Test mode: Copied and made executable default hooks to $USER_HOOKS_AVAIL_DIR"
   else
-    echo "WARN: Test mode: Repository hooks source directory not found: $REPO_HOOKS_DIR" >&2
+    echo "WARN: Test mode: Repository hooks source directory not found: '$REPO_HOOKS_DIR'." >&2
   fi
 
   TEST_HOOK_TO_ENABLE="90_archive.sh"
@@ -347,29 +377,31 @@ EOF
     ln -sf "../hooks-available/$TEST_HOOK_TO_ENABLE" "$USER_HOOKS_ENABLED_DIR/$TEST_HOOK_TO_ENABLE"
     echo "INFO: Test mode: Enabled test hook: $TEST_HOOK_TO_ENABLE"
   else
-    echo "WARN: Test mode: Test hook $TEST_HOOK_TO_ENABLE not found in $USER_HOOKS_AVAIL_DIR. Skipping link." >&2
+    echo "WARN: Test mode: Test hook '$TEST_HOOK_TO_ENABLE' not found in '$USER_HOOKS_AVAIL_DIR'. Skipping link." >&2
   fi
 
   echo "INFO: Test mode: Executing run_backup.sh with isolated config: $EFFECTIVE_USER_CFG_ROOT"
   "$SCRIPT_DIR/bin/run_backup.sh" --config "$EFFECTIVE_USER_CFG_ROOT"
-
-  # --- Test Cleanup (Theme 5) ---
-  local test_hook_enabled_link="$USER_HOOKS_ENABLED_DIR/$TEST_HOOK_TO_ENABLE"
-  if [[ -L "$test_hook_enabled_link" ]]; then
-    rm "$test_hook_enabled_link"
-    echo "INFO: Test mode: Unlinked test hook: $test_hook_enabled_link"
+ 
+  local test_hook_enabled="$USER_HOOKS_ENABLED_DIR/$TEST_HOOK_TO_ENABLE"
+  if [[ -L "$test_hook_enabled" ]]; then
+    rm "$test_hook_enabled"
+    echo "INFO: Test mode: Unlinked test hook: $test_hook_enabled"
   fi
   
-  local test_machine_enabled_link="$EFFECTIVE_USER_CFG_ROOT/machines-enabled/$TEST_MACHINE_IDENT"
-  if [[ -L "$test_machine_enabled_link" ]]; then
-      rm "$test_machine_enabled_link"
+  local test_machine_enabled="$EFFECTIVE_USER_CFG_ROOT/machines-enabled/$TEST_MACHINE_IDENT"
+  if [[ -L "$test_machine_enabled" ]]; then
+      rm "$test_machine_enabled"
       echo "INFO: Test mode: Unlinked and disabled test machine config for $TEST_MACHINE_IDENT."
   fi
 
   echo ""
   echo "$PROJECT_NAME Test Suite complete."
-  echo "Output backup files should be in: $TEST_BACKUP_TARGET_DIR"
-  echo "Archives (if any) should be in: $TEST_BACKUP_ARCHIVE_DIR"
-  echo "Configuration used for this test run was isolated in: $EFFECTIVE_USER_CFG_ROOT"
-  echo "This test did NOT affect your main user configuration in $USER_CONFIG_DEFAULT (unless --user-config-dir pointed there for non-test mode)"
+  echo "--------------------------------------------------"
+  echo "Test Output Summary:"
+  echo "  Isolated configuration used: $EFFECTIVE_USER_CFG_ROOT"
+  echo "  Simulated backup files (if any) in: $TEST_BACKUP_TARGET_DIR"
+  echo "  Simulated archive files (if any) in: $TEST_BACKUP_ARCHIVE_DIR"
+  echo "--------------------------------------------------"
+  echo "This test did NOT affect your main user configuration (e.g., in $USER_CONFIG_DEFAULT)."
 fi
