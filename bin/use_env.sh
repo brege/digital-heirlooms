@@ -29,10 +29,9 @@ fi
 TARGET_LINK="$(cd "$(dirname "${BASH_SOURCE[0]}")/../config" && pwd)/backup.env"
 
 if [[ ! -f "$ENV_PATH" ]]; then
-  echo "❌ No such env file: $ENV_PATH"
+  echo "ERROR: No such env file: $ENV_PATH" >&2
   exit 1
 fi
 
 ln -sf "$ENV_PATH" "$TARGET_LINK"
-echo "🔁 Linked $TARGET_LINK → $ENV_PATH"
-
+echo "Linked $TARGET_LINK -> $ENV_PATH"
