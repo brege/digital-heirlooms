@@ -8,7 +8,6 @@ _create_local_archive_with_progress() {
   local archive_path="$1"
   local source_dir_for_tar="$2" # This is the TARGET_DIR passed to the script
   # DRY_RUN is an environment variable, tar_cmd array is already set based on it
-  # local dry_run_active="${DRY_RUN:-false}" # Not strictly needed if using pre-set tar_cmd
 
   echo "Archive: Creating local archive: $archive_path from $source_dir_for_tar"
 
@@ -22,32 +21,19 @@ _create_local_archive_with_progress() {
       echo "Archive: pv found, attempting progress bar for local archiving."
       total_size=$(du -sb "$source_dir_for_tar" | awk '{print $1}')
       if [[ -z "$total_size" || ! "$total_size" =~ ^[0-9]+$ || "$total_size" -eq 0 ]]; then
-          echo "[WARN] Archive: Could not determine size of '$source_dir_for_tar' or size is 0. Archiving without pv progress."
-          # Use the actual tar command from tar_cmd_base (which is 'tar -I zstd -cf')
+          echo "[WARN] Archive: Could not determine size of '$source_dir_for_tar' or size is 0. Archiving without pv progress." >&2
           tar -I zstd -cf "$archive_path" -C "$(dirname "$source_dir_for_tar")" "$(basename "$source_dir_for_tar")"
       else
           (cd "$(dirname "$source_dir_for_tar")" && tar -cf - "$(basename "$source_dir_for_tar")" | pv -N "Archiving $(basename "$source_dir_for_tar")" -s "$total_size" -ptebar | zstd -T0 > "$archive_path")
       fi
     else
       echo "Archive: pv not found. Archiving locally without progress bar."
-      # Use the actual tar command from tar_cmd_base
       tar -I zstd -cf "$archive_path" -C "$(dirname "$source_dir_for_tar")" "$(basename "$source_dir_for_tar")"
     fi
-    echo "Archive: Local archive created: $local_archive_path"
+    echo "Archive: Local archive created: $archive_path"
   fi
 }
 # --- End Function Definition ---
-
-# Define variables based on the target directory
-TARGET_DIR="$1"  # This is the path to the backed-up data, e.g., /path/to/LOCAL_TARGET_BASE/user@host
-user_host="$(basename "$TARGET_DIR")"
-
-# Archive file name
-archive_name="$user_host.tar.zst"
-local_archive_path="${LOCAL_ARCHIVE_BASE%/}/$archive_name" # Ensure no double slashes
-remote_archive_path="${REMOTE_ARCHIVE_BASE%/}/$archive_name" # Ensure no double slashes
-# local_source_dir was "$LOCAL_TARGET_BASE/$user_host" in your script.
-# For local archiving, TARGET_DIR *is* the source directory.
 
 # DRY RUN flag logic
 tar_cmd=(tar -I zstd -cf) # Default actual command
@@ -59,7 +45,7 @@ fi
 
 # Ensure local archive dir exists if set
 if [[ -n "${LOCAL_ARCHIVE_BASE:-}" ]]; then
-  echo "Archive: Ensuring local directory exists: $LOCAL_ARCHIVE_BASE"
+  echo "Archive: Ensuring local base directory exists: $LOCAL_ARCHIVE_BASE"
   if [[ "${DRY_RUN:-false}" == "true" ]]; then
     echo "[DRY RUN] Would execute: mkdir -p \"$LOCAL_ARCHIVE_BASE\""
   else
@@ -72,10 +58,8 @@ if [[ -n "${REMOTE_ARCHIVE_BASE:-}" ]]; then
   if [[ "$REMOTE_ARCHIVE_BASE" == *":"* ]]; then
     remote_user_host_for_mkdir="${REMOTE_ARCHIVE_BASE%%:*}"
     remote_path_for_mkdir="${REMOTE_ARCHIVE_BASE#*:}"
-    # Ensure remote_path_for_mkdir doesn't include the filename part if present
-    remote_path_for_mkdir="${remote_path_for_mkdir%/*}" 
     if [[ -n "$remote_user_host_for_mkdir" && -n "$remote_path_for_mkdir" ]]; then
-        echo "Archive: Ensuring remote directory exists: $remote_user_host_for_mkdir:$remote_path_for_mkdir"
+        echo "Archive: Ensuring remote base directory exists: $remote_user_host_for_mkdir:'$remote_path_for_mkdir'"
         if [[ "${DRY_RUN:-false}" == "true" ]]; then
             echo "[DRY RUN] Would execute: ssh $remote_user_host_for_mkdir mkdir -p '$remote_path_for_mkdir'"
         else
@@ -83,7 +67,7 @@ if [[ -n "${REMOTE_ARCHIVE_BASE:-}" ]]; then
         fi
     fi
   else
-      echo "Archive: Ensuring (local) remote archive directory exists: $REMOTE_ARCHIVE_BASE"
+      echo "Archive: Ensuring (local) remote archive base directory exists: $REMOTE_ARCHIVE_BASE"
       if [[ "${DRY_RUN:-false}" == "true" ]]; then
           echo "[DRY RUN] Would execute: mkdir -p \"$REMOTE_ARCHIVE_BASE\""
       else
@@ -92,107 +76,113 @@ if [[ -n "${REMOTE_ARCHIVE_BASE:-}" ]]; then
   fi
 fi
 
-# Archive logic
-if [[ -n "${LOCAL_ARCHIVE_BASE:-}" && -n "${REMOTE_ARCHIVE_BASE:-}" ]]; then
-  # Call the function to create the local archive
-  _create_local_archive_with_progress "$local_archive_path" "$TARGET_DIR"
-  # To revert to the old method, comment out the line above and uncomment the line below:
-  # "${tar_cmd[@]}" "$local_archive_path" -C "$TARGET_DIR" . # Original used -C "$local_source_dir" which was $LOCAL_TARGET_BASE/$user_host. TARGET_DIR is more direct.
-
-  echo "Archive: Syncing local archive to remote target: $REMOTE_ARCHIVE_BASE" # Your original used REMOTE_ARCHIVE_BASE here
-  # Build the rsync command for this operation
-  rsync_op_cmd=("${rsync_cmd[@]}") # Start with base (e.g. rsync -avz or the dry-run echo version)
-  if [[ "${rsync_cmd[0]}" != "echo" && "${DRY_RUN:-false}" != "true" ]]; then # Add progress if not a dry run echo
-      rsync_op_cmd=(rsync -avz --info=progress2) # Rebuild if not dry run echo
-      # If DRY_RUN was true, rsync_cmd already has --dry-run, so no need to re-add explicitly here
-      # unless rsync_cmd was just (rsync -avz) and DRY_RUN was true, then it should be added.
-      # The original rsync_cmd array already handles the --dry-run addition.
-  elif [[ "${rsync_cmd[0]}" == "echo" ]]; then # It's a dry run echo
-      : # Do nothing, command is already correct
-  else # It's a real command, but DRY_RUN is false, ensure progress is there
-      rsync_op_cmd=(rsync -avz --info=progress2)
-  fi
-  # If DRY_RUN is true, rsync_cmd already includes --dry-run.
-  # If DRY_RUN is false, we want to ensure --info=progress2 is there.
-  # Let's simplify:
-  final_rsync_for_archive_push=()
-  if [[ "${DRY_RUN:-false}" == "true" ]]; then
-      final_rsync_for_archive_push=("${rsync_cmd[@]}") # rsync_cmd already has --dry-run
-  else
-      final_rsync_for_archive_push=(rsync -avz --info=progress2) # Add progress for actual run
-  fi
-  final_rsync_for_archive_push+=("$local_archive_path" "$remote_archive_path")
-  "${final_rsync_for_archive_push[@]}"
-
-
-elif [[ -n "$LOCAL_ARCHIVE_BASE" ]]; then
-  # Call the function to create the local archive
-  _create_local_archive_with_progress "$local_archive_path" "$TARGET_DIR"
-  # To revert to the old method, comment out the line above and uncomment the line below:
-  # "${tar_cmd[@]}" "$local_archive_path" -C "$TARGET_DIR" . # Original used -C "$local_source_dir"
-
-elif [[ -n "$REMOTE_ARCHIVE_BASE" && "$LOCAL_ARCHIVE_BASE" != "$REMOTE_ARCHIVE_BASE" ]]; then
-  echo "Archive: Creating remote archive on $user_host for $REMOTE_ARCHIVE_BASE"
-  
-  remote_user_host="${REMOTE_ARCHIVE_BASE%%:*}"
-  remote_archive_base_on_remote="${REMOTE_ARCHIVE_BASE#*:}"
-  
-  # REMOTE_TARGET_BASE is where the plain files are on the remote server
-  if [[ -z "${REMOTE_TARGET_BASE:-}" || "$REMOTE_TARGET_BASE" != *":"* ]]; then
-      echo "[ERROR] Archive: REMOTE_TARGET_BASE must be defined as a remote path (user@host:path) for direct remote archiving." >&2
-      exit 1
-  fi
-  # The TARGET_DIR passed to this script should be the remote path of the plain files,
-  # e.g., user@server:/backup/target/plain_files_root/user_to_backup@host_to_backup
-  # The tar command needs to run on that remote server.
-  # The -C path should be the parent of the directory we want to tar.
-  # The directory to tar is the last component of TARGET_DIR's path part.
-
-  if [[ "$TARGET_DIR" != *":"* ]]; then
-      echo "[ERROR] Archive: For direct remote archiving, the input path ($TARGET_DIR) must be the remote path to the source files (e.g., user@server:/path/to/data)." >&2
-      exit 1
-  fi
-  
-  # Host where the source files (TARGET_DIR) reside and where tar will run
-  source_files_host="${TARGET_DIR%%:*}"
-  source_files_path_on_host="${TARGET_DIR#*:}" # e.g., /backup/target/plain_files_root/user_to_backup@host_to_backup
-
-  # The archive is created on the host defined by REMOTE_ARCHIVE_BASE
-  # If source_files_host and remote_user_host (from REMOTE_ARCHIVE_BASE) are different, this is complex.
-  # Your original script assumed they are the same. Let's stick to that.
-  if [[ "$source_files_host" != "$remote_user_host" ]]; then
-      echo "[ERROR] Archive: Direct remote archiving currently requires source files and archive destination to be on the same remote host ($source_files_host vs $remote_user_host)." >&2
-      exit 1
-  fi
-
-  # Path for -C option of tar, which is the parent of the directory to be archived
-  remote_c_path_for_tar="$(dirname "$source_files_path_on_host")"
-  # Directory name to archive (basename of the source path on the remote host)
-  dir_to_tar_on_remote="$(basename "$source_files_path_on_host")"
-
-  ssh_cmd="mkdir -p '$remote_archive_base_on_remote' && tar -I zstd -cf '$remote_archive_base_on_remote/$archive_name' -C '$remote_c_path_for_tar' '$dir_to_tar_on_remote'"
-  
-  echo "Archive Details: Remote user/host for command execution: $remote_user_host"
-  echo "Archive Details: Remote archive base directory: $remote_archive_base_on_remote"
-  echo "Archive Details: Full remote archive path: $remote_archive_base_on_remote/$archive_name"
-  echo "Archive Details: Remote source base path for tar -C: $remote_c_path_for_tar"
-  echo "Archive Details: Directory to tar within -C path: $dir_to_tar_on_remote"
-  echo "Archive Command: SSH command for remote archiving: $ssh_cmd"
-  echo "Archive: Executing remote archive creation via SSH."
-
-  if [[ "${DRY_RUN:-false}" == "true" ]]; then
-    echo "[DRY RUN] Would execute: ssh $remote_user_host \"$ssh_cmd\""
-  else
-    ssh "$remote_user_host" "$ssh_cmd"
-  fi
-else
-  echo "[WARN] Skipping archive: LOCAL_ARCHIVE_BASE or REMOTE_ARCHIVE_BASE not defined in configuration for $user_host."
-  echo
-  echo "Please define these variables in your configuration to proceed:"
-  echo
-  echo "    Example: In ./config/backup.env (or your custom env file)"
-  echo "    LOCAL_ARCHIVE_BASE=\"\" # Local archive directory, e.g. \"$HOME/Backups/archive\""
-  echo "    REMOTE_ARCHIVE_BASE=\"\" # Remote archive directory, e.g. \"$user_host:/storage/backups/archive\"" 
-  echo  
+if [[ $# -eq 0 ]]; then
+    echo "Archive: No target directories provided to process. Exiting hook."
+    exit 0
 fi
 
+for TARGET_DIR in "$@"; do
+  echo # Blank line for readability
+  echo "Archive: Processing target: $TARGET_DIR"
+
+  user_host="$(basename "$TARGET_DIR")" 
+  archive_name="$user_host.tar.zst"
+  local_archive_path="${LOCAL_ARCHIVE_BASE%/}/$archive_name" 
+  remote_archive_path="${REMOTE_ARCHIVE_BASE%/}/$archive_name" 
+
+  # Archive logic
+  if [[ -n "${LOCAL_ARCHIVE_BASE:-}" && -n "${REMOTE_ARCHIVE_BASE:-}" ]]; then
+    if [[ "$TARGET_DIR" == *":"* ]]; then
+        echo "[ERROR] Archive: LOCAL_ARCHIVE_BASE is set, but TARGET_DIR ('$TARGET_DIR') appears to be remote. Cannot create local archive from remote source directly with current '_create_local_archive_with_progress'." >&2
+        continue
+    fi
+    _create_local_archive_with_progress "$local_archive_path" "$TARGET_DIR"
+
+    echo "Archive: Syncing local archive $local_archive_path to remote target $remote_archive_path"
+    final_rsync_for_archive_push=()
+    if [[ "${DRY_RUN:-false}" == "true" ]]; then
+        final_rsync_for_archive_push=("${rsync_cmd[@]}")
+    else
+        final_rsync_for_archive_push=(rsync -avz --info=progress2)
+    fi
+    final_rsync_for_archive_push+=("$local_archive_path" "$remote_archive_path")
+    "${final_rsync_for_archive_push[@]}"
+
+  elif [[ -n "$LOCAL_ARCHIVE_BASE" ]]; then
+    if [[ "$TARGET_DIR" == *":"* ]]; then
+        echo "[ERROR] Archive: LOCAL_ARCHIVE_BASE is set, but TARGET_DIR ('$TARGET_DIR') appears to be remote. Cannot create local archive from remote source directly with current '_create_local_archive_with_progress'." >&2
+        continue
+    fi
+    _create_local_archive_with_progress "$local_archive_path" "$TARGET_DIR"
+
+  elif [[ -n "$REMOTE_ARCHIVE_BASE" && -z "${LOCAL_ARCHIVE_BASE:-}" ]]; then 
+    echo "Archive: Creating remote archive for $user_host using remote sources, to $REMOTE_ARCHIVE_BASE"
+    
+    if [[ "$REMOTE_ARCHIVE_BASE" != *":"* ]]; then
+        echo "[ERROR] Archive: REMOTE_ARCHIVE_BASE ('$REMOTE_ARCHIVE_BASE') must be a remote path (user@host:path) for direct remote archiving." >&2
+        continue 
+    fi
+    if [[ -z "${REMOTE_TARGET_BASE:-}" || "$REMOTE_TARGET_BASE" != *":"* ]]; then
+        echo "[ERROR] Archive: REMOTE_TARGET_BASE (from backup.env) must be defined as a remote path (user@host:path) to locate source files for direct remote archiving." >&2
+        continue 
+    fi
+    
+    actual_remote_source_prefix="${REMOTE_TARGET_BASE%/}/$user_host"
+    
+    source_files_host="${actual_remote_source_prefix%%:*}"
+    source_files_path_on_host="${actual_remote_source_prefix#*:}" 
+
+    remote_archive_cmd_host="${REMOTE_ARCHIVE_BASE%%:*}"
+    remote_archive_target_dir="${REMOTE_ARCHIVE_BASE#*:}"
+
+    if [[ "$source_files_host" != "$remote_archive_cmd_host" ]]; then
+        echo "[ERROR] Archive: Direct remote archiving requires source files (on '$source_files_host' from REMOTE_TARGET_BASE) and archive destination (on '$remote_archive_cmd_host' from REMOTE_ARCHIVE_BASE) to be on the same remote host." >&2
+        continue
+    fi
+
+    remote_c_path_for_tar="$(dirname "$source_files_path_on_host")"
+    dir_to_tar_on_remote="$(basename "$source_files_path_on_host")"
+    full_remote_tarball_path="${remote_archive_target_dir%/}/$archive_name"
+    
+    echo "Archive Details (Direct Remote):"
+    echo "  Remote source for tar: $source_files_host:$source_files_path_on_host"
+    echo "  Remote host for command: $remote_archive_cmd_host"
+    echo "  Target directory on remote for archive: $remote_archive_target_dir"
+    echo "  Full remote archive path: $full_remote_tarball_path"
+    echo "  Remote tar -C path: $remote_c_path_for_tar"
+    echo "  Directory to tar on remote: $dir_to_tar_on_remote"
+    echo "Archive: Executing remote archive creation via SSH."
+
+    final_ssh_tar_cmd=""
+    if ssh "$remote_archive_cmd_host" "command -v pv &> /dev/null"; then
+        echo "Archive: pv found on remote host '$remote_archive_cmd_host'."
+        remote_total_size_cmd="du -sb '$source_files_path_on_host' | awk '{print \$1}'"
+        remote_total_size=$(ssh "$remote_archive_cmd_host" "$remote_total_size_cmd")
+
+        if [[ -n "$remote_total_size" && "$remote_total_size" =~ ^[0-9]+$ && "$remote_total_size" -gt 0 ]]; then
+            echo "Archive: Remote source size is $remote_total_size bytes. Using pv for progress."
+            final_ssh_tar_cmd="(cd '$remote_c_path_for_tar' && tar -cf - '$dir_to_tar_on_remote' | pv -N \"Archiving $dir_to_tar_on_remote@$remote_archive_cmd_host\" -s $remote_total_size -ptebar | zstd -T0 > '$full_remote_tarball_path')"
+        else
+            echo "[WARN] Archive: Could not determine remote size of '$source_files_path_on_host' ($remote_total_size) or size is 0. Archiving remotely without pv progress." >&2
+            final_ssh_tar_cmd="tar -I zstd -cf '$full_remote_tarball_path' -C '$remote_c_path_for_tar' '$dir_to_tar_on_remote'"
+        fi
+    else
+        echo "Archive: pv not found on remote host '$remote_archive_cmd_host'. Archiving remotely without progress bar."
+        final_ssh_tar_cmd="tar -I zstd -cf '$full_remote_tarball_path' -C '$remote_c_path_for_tar' '$dir_to_tar_on_remote'"
+    fi
+
+    if [[ "${DRY_RUN:-false}" == "true" ]]; then
+      # For DRY_RUN, also indicate that -t would be used for actual execution.
+      echo "[DRY RUN] Would execute: ssh -t $remote_archive_cmd_host \"$final_ssh_tar_cmd\""
+    else
+      # Use ssh -t to allocate a TTY for pv
+      ssh -t "$remote_archive_cmd_host" "$final_ssh_tar_cmd"
+    fi
+
+  else
+    echo "[WARN] Skipping archive for $user_host: Archive base variables not configured suitably." >&2
+  fi
+  echo "Archive: Finished processing $user_host from $TARGET_DIR."
+done
+echo # Final blank line
+echo "Archive: All targets processed by hook."
