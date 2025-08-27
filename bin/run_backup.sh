@@ -6,17 +6,17 @@ PROJECT_NAME="digital-heirlooms"
 
 # --- Script Path & Default Config Path ---
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-CONFIG_ROOT_DEFAULT="$REPO_ROOT/config"
+config_root_DEFAULT="$REPO_ROOT/config"
 
 # --- Standard User Config Paths ---
 USER_HOME_CFG_ROOT="$HOME/.config/$PROJECT_NAME"
 USER_HOME_ENV_FILE="$USER_HOME_CFG_ROOT/backup.env"
 
 # --- Argument Storage ---
-CONFIG_ROOT_OVERRIDE="" 
+config_root_override="" 
 
 # This will hold the final, validated configuration root path
-CONFIG_ROOT=""
+config_root=""
 
 # --- print_usage function ---
 print_usage() {
@@ -31,7 +31,7 @@ print_usage() {
   echo ""
   echo "Configuration Discovery Order (if --config is not used):"
   echo "  1. User specific: '$USER_HOME_CFG_ROOT' (via its backup.env or as the directory itself)."
-  echo "  2. Repository default: '$CONFIG_ROOT_DEFAULT' (via its backup.env or as the directory itself)."
+  echo "  2. Repository default: '$config_root_DEFAULT' (via its backup.env or as the directory itself)."
 }
 
 # --- Argument parsing ---
@@ -46,14 +46,14 @@ while [[ $idx -lt ${#args_to_process[@]} ]]; do
       ;;
     --config)
       if [[ -n "${args_to_process[$((idx + 1))]:-}" && "${args_to_process[$((idx + 1))]}" != --* ]]; then
-        CONFIG_ROOT_OVERRIDE="${args_to_process[$((idx + 1))]}"
+        config_root_override="${args_to_process[$((idx + 1))]}"
         idx=$((idx + 1)) 
       else
         echo "WARN: --config flag found, but no value followed or value is another flag. Ignoring." >&2
       fi
       ;;
     --config=*)
-      CONFIG_ROOT_OVERRIDE="${arg_to_check#*=}"
+      config_root_override="${arg_to_check#*=}"
       ;;
     -*)
       echo "ERROR: Unknown option: '$arg_to_check'." >&2
@@ -67,113 +67,87 @@ while [[ $idx -lt ${#args_to_process[@]} ]]; do
   ((idx++))
 done
 
-# --- Resolve Final Configuration Root Directory (Unified 3-Tier + Flag Logic) ---
+# --- Resolve Configuration Root Directory ---
 
-# --- Helper function to check a potential config directory ---
-CONFIG_CANDIDATE_REALPATH=""
-_try_set_config_root() {
-  local path_to_check="$1"
-  local description="$2"
-  local temp_realpath
+# Helper to validate a config directory
+_validate_config_dir() {
+  local path="$1"
+  local resolved_path
 
-  if ! temp_realpath="$(realpath "$path_to_check" 2>/dev/null)"; then
-    echo "WARN: $description: Path '$path_to_check' is invalid (realpath failed). Will be ignored." >&2 # Clarified
+  if ! resolved_path="$(realpath "$path" 2>/dev/null)"; then
     return 1
   fi
-  if [[ ! -d "$temp_realpath" ]]; then
-    echo "WARN: $description: Path '$temp_realpath' is not a directory. Will be ignored." >&2 # Clarified
-    return 1
+  if [[ ! -d "$resolved_path" ]]; then
+    return 1 
   fi
-  if [[ ! -f "$temp_realpath/backup.env" ]]; then
-    echo "WARN: $description: Directory '$temp_realpath' does not contain a 'backup.env' file. Will be ignored for auto-discovery." >&2 # Clarified
-    return 1
-  fi
-  CONFIG_CANDIDATE_REALPATH="$temp_realpath"
-  return 0
+  echo "$resolved_path"
 }
 
-# --- Tier 0: Check for Explicit --config Argument ---
-if [[ -n "$CONFIG_ROOT_OVERRIDE" ]]; then
-  echo "INFO: --config flag provided. Attempting to use specified path: '$CONFIG_ROOT_OVERRIDE'" # Clarified
-  cfg_realpath_tmp="" 
-  if ! cfg_realpath_tmp="$(realpath "$CONFIG_ROOT_OVERRIDE" 2>/dev/null)"; then
-    echo "ERROR: Invalid path specified with --config: '$CONFIG_ROOT_OVERRIDE' (realpath resolution failed)." >&2
+# Helper to try config discovery from env file redirect
+_try_env_redirect() {
+  local env_file="$1"
+  local sourced_cfg_dir
+
+  if [[ ! -f "$env_file" ]]; then
+    return 1
+  fi
+  
+  sourced_cfg_dir=$(CONFIG_DIR="" source "$env_file" >/dev/null 2>&1 && echo "${CONFIG_DIR:-}")
+  if [[ -n "$sourced_cfg_dir" ]]; then
+    if resolved_path=$(_validate_config_dir "$sourced_cfg_dir") && [[ -f "$resolved_path/backup.env" ]]; then
+      echo "INFO: Using config redirected by '$env_file': '$resolved_path'"
+      echo "$resolved_path"
+      return 0
+    fi
+  fi
+  return 1
+}
+
+# 3-tier config discovery
+if [[ -n "$config_root_override" ]]; then
+  # Tier 0: --config flag (strict validation, exit on failure)
+  if ! resolved_path=$(_validate_config_dir "$config_root_override"); then
+    echo "ERROR: Invalid --config path: '$config_root_override'" >&2
     exit 1
   fi
-  if [[ ! -d "$cfg_realpath_tmp" ]]; then
-    echo "ERROR: Path specified with --config is not a directory: '$cfg_realpath_tmp'." >&2
-    exit 1
+  if [[ ! -f "$resolved_path/backup.env" ]]; then
+    echo "WARN: No backup.env in --config directory '$resolved_path'" >&2
   fi
-  if [[ ! -f "$cfg_realpath_tmp/backup.env" ]]; then
-    echo "WARN: Directory specified with --config ('$cfg_realpath_tmp') does not contain a 'backup.env' file." >&2
-    echo "      Proceeding, but essential configuration variables (like DRY_RUN, target paths) might be missing or use defaults." >&2
-  fi
-  CONFIG_ROOT="$cfg_realpath_tmp"
+  config_root="$resolved_path"
+elif config_root=$(_try_env_redirect "$USER_HOME_ENV_FILE"); then
+  # Tier 1a: User env file redirect
+  :
+elif resolved_path=$(_validate_config_dir "$USER_HOME_CFG_ROOT") && [[ -f "$resolved_path/backup.env" ]]; then
+  # Tier 1b: User standard directory
+  echo "INFO: Using user config directory '$resolved_path'"
+  config_root="$resolved_path"
+elif config_root=$(_try_env_redirect "$CONFIG_ROOT_DEFAULT/backup.env"); then
+  # Tier 2a: Repo env file redirect  
+  :
+elif resolved_path=$(_validate_config_dir "$CONFIG_ROOT_DEFAULT") && [[ -f "$resolved_path/backup.env" ]]; then
+  # Tier 2b: Repo default directory
+  echo "INFO: Using repo default config directory '$resolved_path'" 
+  config_root="$resolved_path"
 fi
 
-# --- Tier 1: Check User's Standard Configuration ($USER_HOME_CFG_ROOT) ---
-if [[ -z "$CONFIG_ROOT" ]]; then 
-  # --- Tier 1a: Check for CONFIG_DIR in $USER_HOME_ENV_FILE ---
-  if [[ -f "$USER_HOME_ENV_FILE" ]]; then 
-    sourced_cfg_dir=$(CONFIG_DIR="" source "$USER_HOME_ENV_FILE" >/dev/null 2>&1 && echo "${CONFIG_DIR:-}")
-    if [[ -n "$sourced_cfg_dir" ]]; then 
-      echo "INFO: Found CONFIG_DIR in '$USER_HOME_ENV_FILE', points to: '$sourced_cfg_dir'"
-      if _try_set_config_root "$sourced_cfg_dir" "Path from CONFIG_DIR in '$USER_HOME_ENV_FILE'"; then
-        CONFIG_ROOT="$CONFIG_CANDIDATE_REALPATH"
-        echo "INFO: Using configuration root redirected by '$USER_HOME_ENV_FILE': '$CONFIG_ROOT'"
-      fi
-    fi
-  fi
-  # --- Tier 1b: Check $USER_HOME_CFG_ROOT directory itself ---
-  if [[ -z "$CONFIG_ROOT" ]]; then 
-    if _try_set_config_root "$USER_HOME_CFG_ROOT" "User standard directory '$USER_HOME_CFG_ROOT'"; then
-      CONFIG_ROOT="$CONFIG_CANDIDATE_REALPATH"
-      echo "INFO: Using user's standard configuration directory '$CONFIG_ROOT' (backup.env present)."
-    fi
-  fi
-fi
-
-# --- Tier 2: Check Repository's Default Configuration ($CONFIG_ROOT_DEFAULT) ---
-if [[ -z "$CONFIG_ROOT" ]]; then 
-  REPO_DEFAULT_ENV_FILE="$CONFIG_ROOT_DEFAULT/backup.env"
-  # --- Tier 2a: Check for CONFIG_DIR in $REPO_DEFAULT_ENV_FILE ---
-  if [[ -f "$REPO_DEFAULT_ENV_FILE" ]]; then 
-    sourced_cfg_dir=$(CONFIG_DIR="" source "$REPO_DEFAULT_ENV_FILE" >/dev/null 2>&1 && echo "${CONFIG_DIR:-}")
-    if [[ -n "$sourced_cfg_dir" ]]; then 
-      echo "INFO: Found CONFIG_DIR in '$REPO_DEFAULT_ENV_FILE', points to: '$sourced_cfg_dir'"
-      if _try_set_config_root "$sourced_cfg_dir" "Path from CONFIG_DIR in '$REPO_DEFAULT_ENV_FILE'"; then
-        CONFIG_ROOT="$CONFIG_CANDIDATE_REALPATH"
-        echo "INFO: Using configuration root redirected by '$REPO_DEFAULT_ENV_FILE': '$CONFIG_ROOT'"
-      fi
-    fi
-  fi
-  # --- Tier 2b: Check $CONFIG_ROOT_DEFAULT directory itself ---
-  if [[ -z "$CONFIG_ROOT" ]]; then 
-    if _try_set_config_root "$CONFIG_ROOT_DEFAULT" "Repository default directory '$CONFIG_ROOT_DEFAULT'"; then
-      CONFIG_ROOT="$CONFIG_CANDIDATE_REALPATH"
-      echo "INFO: Using repository default configuration directory '$CONFIG_ROOT' (backup.env present)."
-    fi
-  fi
-fi
-
-# --- Final Validation of Determined CONFIG_ROOT ---
-if [[ -z "$CONFIG_ROOT" ]]; then
+# --- Final Validation of Determined config_root ---
+if [[ -z "$config_root" ]]; then
   echo "ERROR: Could not determine a valid $PROJECT_NAME configuration root directory." >&2
   echo "       Please use the --config option or ensure a valid setup exists (see '$0 --help' for discovery order)." >&2
   exit 1
 fi
 
-echo "INFO: Effective configuration root will be: $CONFIG_ROOT" # Clarified this is the decision point
+echo "INFO: Using config root: $config_root"
 
 # --- Source Operational Environment File and Set Runtime Variables ---
-ENV_FILE_TO_SOURCE="$CONFIG_ROOT/backup.env"
-if [[ -f "$ENV_FILE_TO_SOURCE" ]]; then
-  echo "INFO: Sourcing operational environment file: '$ENV_FILE_TO_SOURCE'" # Quoted path
+env_file_to_source="$config_root/backup.env"
+if [[ -f "$env_file_to_source" ]]; then
+  echo "INFO: Sourcing environment: '$env_file_to_source'"
   set -a  
-  source "$ENV_FILE_TO_SOURCE"
+  source "$env_file_to_source"
   set +a
 else
-  echo "WARN: Operational environment file not found: '$ENV_FILE_TO_SOURCE'." >&2
+  echo "WARN: Operational environment file not found: '$env_file_to_source'." >&2
   echo "      Proceeding with default variable settings (DRY_RUN=true, empty target paths)." >&2
   DRY_RUN="${DRY_RUN:-true}" 
   LOCAL_TARGET_BASE="${LOCAL_TARGET_BASE:-}"
@@ -183,22 +157,22 @@ else
 fi
 
 # --- Define Core Operational Directories ---
-MACHINES_ENABLED_DIR="$CONFIG_ROOT/machines-enabled"
-EXCLUDES_DIR="$CONFIG_ROOT/excludes" 
-HOOKS_DIR="$CONFIG_ROOT/hooks-enabled"
+machines_enabled_dir="$config_root/machines-enabled"
+excludes_dir="$config_root/excludes" 
+hooks_dir="$config_root/hooks-enabled"
 
-echo "INFO: Using machine configurations from: '$MACHINES_ENABLED_DIR'"
-echo "INFO: Using global excludes from directory: '$EXCLUDES_DIR'"
-echo "INFO: Using hooks from: '$HOOKS_DIR'"
+echo "INFO: Machines: $machines_enabled_dir"
+echo "INFO: Excludes: $excludes_dir"
+echo "INFO: Hooks: $hooks_dir"
 
 # --- Setup Global Rsync Exclude File ---
-dflt_exclude_path="$EXCLUDES_DIR/default.exclude"
-if [[ -f "$dflt_exclude_path" ]]; then
-  echo "INFO: Applying global excludes from: '$dflt_exclude_path'"
-  default_exclude="$dflt_exclude_path"
+default_exclude_file="$excludes_dir/default.exclude"
+if [[ -f "$default_exclude_file" ]]; then
+  echo "INFO: Applying global excludes from: '$default_exclude_file'"
+  default_exclude="$default_exclude_file"
 else
   default_exclude=""
-  echo "INFO: No global exclude file found at '$dflt_exclude_path' (this is okay)." # Changed from "No ... found" to "INFO: No..."
+  echo "INFO: No global excludes found"
 fi
 
 # --- Initialize Core Backup Variables and State ---
@@ -231,10 +205,10 @@ flush_backup() {
         rsync_cmd+=(--exclude-from="$default_exclude")
     fi
     if [[ -n "$current_exclude" && -f "$current_exclude" ]]; then
-        echo "INFO: Applying machine-specific excludes for '$current_user@$current_host' from: '$current_exclude'"
+        echo "INFO: Using excludes: '$current_exclude'"
         rsync_cmd+=(--exclude-from="$current_exclude")
     elif [[ -n "$current_exclude" ]]; then 
-        echo "WARN: Machine-specific exclude file specified ('$current_exclude') but not found for '$current_user@$current_host'. Proceeding without it." >&2
+        echo "WARN: Exclude file not found: '$current_exclude'" >&2
     fi
 
     # Determine backup destination and rsync parameters based on LOCAL/REMOTE TARGET_BASE variables
@@ -251,18 +225,12 @@ flush_backup() {
         src_path_expanded="$current_user@$current_host:$src_path"
       fi
       
-      if [[ "$DRY_RUN" != "true" ]]; then
-        mkdir -p "$dest_dir"
-      elif [[ ! -d "$dest_dir" ]]; then 
-        echo "[DRY RUN] Would create directory: '$dest_dir'"
-      fi
+      mkdir -p "$dest_dir"
 
       if [[ "$LOCAL_TARGET_BASE" == /* ]]; then 
           rsync_cmd+=(--exclude "$LOCAL_TARGET_BASE")
       fi
-      if [[ "$DRY_RUN" == "true" ]]; then
-         rsync_cmd+=(--dry-run)
-      fi
+      [[ "$DRY_RUN" == "true" ]] && rsync_cmd+=(--dry-run)
       if [[ "$use_ssh" == true ]]; then
          rsync_cmd+=(-e ssh)
       fi
@@ -287,9 +255,7 @@ flush_backup() {
         rsync_cmd+=(-e ssh "$src_path_expanded" "${dest_dir%/}/")
       fi
       
-      if [[ "$DRY_RUN" == "true" ]]; then
-        rsync_cmd+=(--dry-run)
-      fi
+      [[ "$DRY_RUN" == "true" ]] && rsync_cmd+=(--dry-run)
       echo ""
       echo "Rsyncing directly to remote ('$current_user@$current_host'):"
       echo "  Path: '$src_path_expanded' -> '${dest_dir%/}/'"
@@ -312,18 +278,12 @@ flush_backup() {
         src_path_expanded="$current_user@$current_host:$src_path"
       fi
 
-      if [[ "$DRY_RUN" != "true" ]]; then
-        mkdir -p "$dest_dir"
-      elif [[ ! -d "$dest_dir" ]]; then
-        echo "[DRY RUN] Would create directory: '$dest_dir'"
-      fi
+      mkdir -p "$dest_dir"
 
       if [[ "$LOCAL_TARGET_BASE" == /* ]]; then 
           rsync_cmd+=(--exclude "$LOCAL_TARGET_BASE")
       fi
-      if [[ "$DRY_RUN" == "true" ]]; then
-        rsync_cmd+=(--dry-run)
-      fi
+      [[ "$DRY_RUN" == "true" ]] && rsync_cmd+=(--dry-run)
       if [[ "$use_ssh" == true ]]; then
         rsync_cmd+=(-e ssh)
       fi
@@ -344,9 +304,7 @@ flush_backup() {
     echo "Syncing staged data for '$current_user@$current_host' to remote..."
     echo "  Path: '$local_stage_path/' -> '$remote_dest_path/'"
     local rsync_push_cmd=(rsync -az --delete --info=progress2)
-    if [[ "$DRY_RUN" == "true" ]]; then
-      rsync_push_cmd+=(--dry-run)
-    fi
+    [[ "$DRY_RUN" == "true" ]] && rsync_push_cmd+=(--dry-run)
     rsync_push_cmd+=("$local_stage_path/" "$remote_dest_path/")
     "${rsync_push_cmd[@]}"
   fi
@@ -358,12 +316,12 @@ flush_backup() {
 # --- Main Processing Loop for Machines ---
 machine_processed_count=0
 config_file_found_in_enabled_dir=false
-for config_file in "$MACHINES_ENABLED_DIR"/*; do
+for config_file in "$machines_enabled_dir"/*; do
   if [[ ! -f "$config_file" ]]; then
-    if [[ "$config_file" == "$MACHINES_ENABLED_DIR/*" ]]; then # Handles empty MACHINES_ENABLED_DIR
+    if [[ "$config_file" == "$machines_enabled_dir/*" ]]; then # Handles empty machines_enabled_dir
         : 
     else
-        echo "WARN: Skipping non-file in MACHINES_ENABLED_DIR: '$config_file'" >&2
+        echo "WARN: Skipping non-file: '$config_file'" >&2
     fi
     continue
   fi
@@ -383,7 +341,7 @@ for config_file in "$MACHINES_ENABLED_DIR"/*; do
 
     if [[ "$line" =~ ^\[(.+)@(.+)\]$ ]]; then
       if [[ -n "$current_user" && -n "$current_host" ]]; then 
-        flush_backup || echo "WARN: A problem occurred in flush_backup for '$current_user@$current_host' (from file '$config_file'), continuing." >&2
+        flush_backup || echo "WARN: Backup failed for '$current_user@$current_host'" >&2
         backup_paths=()
         current_exclude="" 
       fi
@@ -405,23 +363,22 @@ for config_file in "$MACHINES_ENABLED_DIR"/*; do
     if [[ "$line" == exclude-from=* && -n "$current_user" && -n "$current_host" ]]; then
       exclude_path_from_file="${line#exclude-from=}"
       resolved_exclude_path=""
-      if [[ "$exclude_path_from_file" != /* && -n "$CONFIG_ROOT" ]]; then
-        if [[ "$exclude_path_from_file" == "$CONFIG_ROOT"* ]]; then
+      if [[ "$exclude_path_from_file" != /* && -n "$config_root" ]]; then
+        if [[ "$exclude_path_from_file" == "$config_root"* ]]; then
             resolved_exclude_path="$exclude_path_from_file"
         else
-            resolved_exclude_path="$CONFIG_ROOT/$exclude_path_from_file"
+            resolved_exclude_path="$config_root/$exclude_path_from_file"
         fi
       else
         resolved_exclude_path="$exclude_path_from_file" 
       fi
       
       if [[ -n "$resolved_exclude_path" ]]; then
-        exclude_realpath_tmp=""
-        if ! exclude_realpath_tmp="$(realpath "$resolved_exclude_path" 2>/dev/null)"; then
-          echo "WARN: Invalid path in 'exclude-from' for '$current_user@$current_host': '$resolved_exclude_path' (realpath failed). No machine-specific exclude will be used." >&2
+        if ! temp_resolved_path="$(realpath "$resolved_exclude_path" 2>/dev/null)"; then
+          echo "WARN: Invalid exclude path for '$current_user@$current_host': '$resolved_exclude_path'" >&2
           current_exclude="" 
         else
-          current_exclude="$exclude_realpath_tmp"
+          current_exclude="$temp_resolved_path"
         fi
       else
           current_exclude="" 
@@ -430,24 +387,24 @@ for config_file in "$MACHINES_ENABLED_DIR"/*; do
   done < "$config_file"
 
   if [[ -n "$current_user" && -n "$current_host" ]]; then
-    flush_backup || echo "WARN: A problem occurred in flush_backup for '$current_user@$current_host' (end of file '$config_file'), continuing." >&2
+    flush_backup || echo "WARN: Backup failed for '$current_user@$current_host'" >&2
   fi
 done
 
 # --- Post-backup Summary and Hook Execution ---
 if [[ "$config_file_found_in_enabled_dir" == false ]]; then
-    echo "INFO: No machine configuration files found in '$MACHINES_ENABLED_DIR'." # Changed to INFO
+    echo "INFO: No machine configs found"
 elif [[ "$machine_processed_count" -eq 0 ]]; then
-    echo "INFO: Machine configuration files were found in '$MACHINES_ENABLED_DIR', but no valid [user@host] sections were processed." # Changed to INFO
+    echo "INFO: No valid machine sections processed"
 fi
 
 if [[ ${#target_machine_roots[@]} -eq 0 ]]; then
     if [[ "$machine_processed_count" -gt 0 ]]; then 
-        echo "INFO: Machines were processed, but no valid backup target directories were recorded. Skipping hooks." # Changed to INFO
+        echo "INFO: No valid targets recorded, skipping hooks"
     else 
-        echo "INFO: No machines processed. Skipping hooks." # Changed to INFO
+        echo "INFO: No machines processed, skipping hooks"
     fi
-elif [[ -d "$HOOKS_DIR" ]]; then
+elif [[ -d "$hooks_dir" ]]; then
   # --- Prepare and Uniquify Target Paths for Hooks ---
   declare -a hook_target_dirs_final=()
   for path_val in "${target_machine_roots[@]}"; do
@@ -464,27 +421,27 @@ elif [[ -d "$HOOKS_DIR" ]]; then
 
   # --- Iterate and Execute Enabled Hook Scripts ---
   if [[ ${#unique_final_paths[@]} -gt 0 ]]; then
-    for hook in "$HOOKS_DIR"/*; do
+    for hook in "$hooks_dir"/*; do
       if [[ -f "$hook" && -x "$hook" ]]; then
         echo ""
         echo "Hooks: Running post-backup hook: '$hook' on targets: ${unique_final_paths[*]}"
         "$hook" "${unique_final_paths[@]}"
       elif [[ -f "$hook" ]]; then 
         echo ""
-        echo "WARN: Hook file '$hook' is not executable. Skipping." >&2 # Changed to WARN
+        echo "WARN: Hook not executable: '$hook'" >&2
       else 
         echo ""
-        echo "INFO: Skipping non-file or non-executable item in hooks directory: '$hook'" # Changed to INFO
+        echo "INFO: Skipping non-executable: '$hook'"
       fi
     done
   else
     echo ""
-    echo "INFO: No valid target directories available for hooks after processing." # Changed to INFO
+    echo "INFO: No valid targets for hooks"
   fi
 else
-  if [[ ! -d "$HOOKS_DIR" ]]; then 
+  if [[ ! -d "$hooks_dir" ]]; then 
     echo ""
-    echo "INFO: Hooks directory not found at '$HOOKS_DIR', or directory is empty. Skipping hook execution." # Changed to INFO
+    echo "INFO: No hooks directory found"
   fi
 fi
 echo ""
