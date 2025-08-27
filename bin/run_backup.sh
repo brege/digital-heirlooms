@@ -277,11 +277,19 @@ flush_backup() {
     elif [[ -z "$LOCAL_TARGET_BASE" && -n "$REMOTE_TARGET_BASE" ]]; then
       dest_dir="$REMOTE_TARGET_BASE/$current_user@$current_host"
       target_machine_roots["$current_user@$current_host"]="$dest_dir"
-      src_path_expanded="$current_user@$current_host:$src_path"
+      
+      # Check if source is local or remote
+      if is_local_host "$current_host"; then
+        src_path_expanded="$src_path"
+        rsync_cmd+=("$src_path_expanded" "${dest_dir%/}/")
+      else
+        src_path_expanded="$current_user@$current_host:$src_path"
+        rsync_cmd+=(-e ssh "$src_path_expanded" "${dest_dir%/}/")
+      fi
+      
       if [[ "$DRY_RUN" == "true" ]]; then
         rsync_cmd+=(--dry-run)
       fi
-      rsync_cmd+=(-e ssh "$src_path_expanded" "${dest_dir%/}/")
       echo ""
       echo "Rsyncing directly to remote ('$current_user@$current_host'):"
       echo "  Path: '$src_path_expanded' -> '${dest_dir%/}/'"
@@ -443,7 +451,8 @@ elif [[ -d "$HOOKS_DIR" ]]; then
   # --- Prepare and Uniquify Target Paths for Hooks ---
   declare -a hook_target_dirs_final=()
   for path_val in "${target_machine_roots[@]}"; do
-    if [[ -d "$path_val" ]]; then 
+    # Include both local directories and remote paths for hooks
+    if [[ -d "$path_val" || "$path_val" == *":"* ]]; then 
       hook_target_dirs_final+=("$path_val")
     fi
   done
